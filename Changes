@@ -1,0 +1,22 @@
+Revision history for Perl extension MMapDB.
+
+0.04  Sun Jul  5 09:59:18 CEST 2009
+      - allow for method chaining with start():
+        MMapDB->new->start->main_index->{...}
+      - lockfile
+
+0.03  Fri Jul  3 11:36:07 CEST 2009
+      - read-only strings in data_record() result (avoid unnecessary copying)
+      - data_record() now returns an array ref instead of a list
+        (also avoid unnecessary copying)
+      - data_record() is inplemented in C.
+      - insert() takes now an array ref instead of a parameter list
+        to be consistent with data_record()
+
+0.02  Thu Jun 25 12:19:15 CEST 2009
+      - backup(), restore(), invalidate(), is_valid()
+
+0.01  Fri Jun 12 09:53:46 2009
+	- original version; created by h2xs 1.23 with options
+		-A -b 5.8.8 -n MMapDB
+

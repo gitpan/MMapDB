@@ -1,0 +1,16 @@
+Changes
+Makefile.PL
+MANIFEST
+ppport.h
+README
+mk_README.sh
+t/000-load.t
+t/001-basic.t
+t/002-benchmark.t
+t/pod-coverage.t
+t/pod.t
+lib/MMapDB.pm
+MMapDB.xs
+typemap
+perl-MMapDB.spec
+META.yml                                 Module meta-data (added by MakeMaker)
