@@ -241,7 +241,7 @@ index_lookup(I, ...)
       UV dataend;
       int i, isidx=1;
 
-      if( expect_false(!(svp && SvROK(*svp))) ) return;
+      if( expect_false(!(svp && SvROK(*svp))) ) goto END;
       datap=SvPV_nolen(SvRV(*svp));
 
       intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
@@ -262,7 +262,8 @@ index_lookup(I, ...)
 	/* pres() calls PUTPACK. So, we must return here */
 	return;
       }
-    END:;
+    END:
+      PUTBACK;
     }
 
 void

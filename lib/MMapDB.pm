@@ -17,7 +17,7 @@ use File::Map qw/map_handle/;
 use Exporter qw/import/;
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.04';
+  our $VERSION = '0.05';
   our %EXPORT_TAGS=
     (
      error=>[qw/E_READONLY E_TWICE E_TRANSACTION E_FULL E_DUPLICATE

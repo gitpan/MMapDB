@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               MMapDB
-version:            0.04
+version:            0.05
 abstract:           a simple database in shared memory
 author:
     - Torsten Foertsch <torsten.foertsch@gmx.net>

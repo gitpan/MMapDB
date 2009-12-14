@@ -1,5 +1,9 @@
 Revision history for Perl extension MMapDB.
 
+0.05  Wed Nov 25 12:56:21 CET 2009
+      - correct index_lookup behavior to return an empty list
+        if the key was not found
+
 0.04  Sun Jul  5 09:59:18 CEST 2009
       - allow for method chaining with start():
         MMapDB->new->start->main_index->{...}

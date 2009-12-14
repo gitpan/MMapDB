@@ -9,7 +9,7 @@ use Fcntl qw/:flock/;
 my @fmts=('', undef, qw/L N J/);
 eval {my $x=pack 'Q', 0; push @fmts, 'Q'};
 #my @fmts=('');
-plan tests=>99*@fmts;
+plan tests=>105*@fmts;
 #plan 'no_plan';
 use Data::Dumper; $Data::Dumper::Useqq=1;
 
@@ -34,6 +34,15 @@ sub doone {
   is $d->intfmt, $rfmt, 'format is '.$rfmt;
 
   $d->start;
+  {
+    no warnings 'uninitialized';
+    my @l=$d->index_lookup($d->mainidx, qw/key0 1 2 3/);
+    is scalar @l, 0, 'key0: not found (initial db)';
+    @l=$d->index_lookup;
+    is scalar @l, 0, 'index_lookup without params (initial db)'; 
+    @l=$d->index_lookup($d->mainidx);
+    is scalar @l, 0, 'index_lookup 1 param (initial db)';
+  }
   $r->start;
 
   lives_ok {$d->begin} 'started transaction';
@@ -130,9 +139,20 @@ sub doone {
   # test index lookup
   ##########################################################################
 
-  is $d->index_lookup($d->mainidx, 'key0'), undef, 'key0: not found';
-  is $d->index_lookup($d->mainidx, 'key11'), undef, 'key11: not found';
-  is $d->index_lookup($d->mainidx, 'key3'), undef, 'key3: not found';
+  {
+    my @l=$d->index_lookup;
+    is scalar @l, 0, 'index_lookup without params';
+    @l=$d->index_lookup($d->mainidx);
+    is scalar @l, 0, 'index_lookup 1 param';
+    @l=$d->index_lookup($d->mainidx, qw/key0 1 2 3/);
+    is scalar @l, 0, 'key0 1 2 3: not found';
+    @l=$d->index_lookup($d->mainidx, qw/key0/);
+    is scalar @l, 0, 'key0: not found';
+    @l=$d->index_lookup($d->mainidx, 'key11');
+    is scalar @l, 0, 'key11: not found';
+    @l=$d->index_lookup($d->mainidx, 'key3');
+    is scalar @l, 0, 'key3: not found';
+  }
 
   my @el=$d->index_lookup($d->mainidx, 'key1');
   is scalar @el, 2, 'key1: 2 positions';
