@@ -1,5 +1,10 @@
 Revision history for Perl extension MMapDB.
 
+0.06  Thu Jan 21 13:18:33 CET 2010
+      - returning nitems in array context for index_iterator and
+        id_index_iterator()
+      - new: is_datapos() as shortcut for $pos<$db->mainidx
+
 0.05  Wed Nov 25 12:56:21 CET 2009
       - correct index_lookup behavior to return an empty list
         if the key was not found

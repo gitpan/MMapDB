@@ -9,7 +9,7 @@ use Fcntl qw/:flock/;
 my @fmts=('', undef, qw/L N J/);
 eval {my $x=pack 'Q', 0; push @fmts, 'Q'};
 #my @fmts=('');
-plan tests=>105*@fmts;
+plan tests=>112*@fmts;
 #plan 'no_plan';
 use Data::Dumper; $Data::Dumper::Useqq=1;
 
@@ -108,7 +108,7 @@ sub doone {
   ##########################################################################
 
   my $dataend=$d->mainidx;
-  my $it;
+  my ($it, $nitems);
 
   $it=$d->id_index_iterator;
   is ref($it), 'CODE', 'got id index iterator';
@@ -117,9 +117,13 @@ sub doone {
   while( my @el=$it->() ) {
     is $positions{$el[0]}, $el[1], 'correct element position';
     cmp_ok $el[1], '<', $dataend, "position is lower than dataend ($dataend)";
+    is $d->is_datapos($el[1]), 1, "is_datapos() agrees";
     $n++;
   }
-  is scalar keys %positions, $n, 'got as many elements as inserted';
+  is $n, scalar keys %positions, 'got as many elements as inserted';
+
+  (undef, $nitems)=$d->id_index_iterator;
+  is $nitems, scalar keys %positions, 'nitems returned by id_index_iterator';
 
   ##########################################################################
   # test main index iterator
@@ -127,13 +131,19 @@ sub doone {
 
   $it=$d->index_iterator($d->mainidx);
   is ref($it), 'CODE', 'got main index iterator';
-  $n=0; undef @h{qw/key1 key2/};
+  $n=0;
+  %h=(); undef @h{qw/key1 key2/};
+  my @datapos=(1, '');		# key1: is datapos, key2: is not
   while( my @el=$it->() ) {
     delete $h{$el[0]};
+    is $d->is_datapos($el[1]), shift(@datapos), "is_datapos()";
     $n++;
   }
   is $n, 2, 'got 2 elements';
   is scalar keys %h, 0, 'with correct keys';
+
+  (undef, $nitems)=$d->index_iterator($d->mainidx);
+  is $nitems, 2, 'nitems returned by index_iterator';
 
   ##########################################################################
   # test index lookup

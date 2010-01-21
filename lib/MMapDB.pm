@@ -17,7 +17,7 @@ use File::Map qw/map_handle/;
 use Exporter qw/import/;
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.05';
+  our $VERSION = '0.06';
   our %EXPORT_TAGS=
     (
      error=>[qw/E_READONLY E_TWICE E_TRANSACTION E_FULL E_DUPLICATE
@@ -212,13 +212,15 @@ sub index_iterator {
   my $stroff=$I->_stringtbl;
   my $sfmt=$I->_stringfmt;
 
-  return sub {
+  my $it=sub {
     return if $cur>=$end;
     my ($key, $npos)=unpack 'x'.$cur.$fmt.'2', $$data;
     my @list=unpack 'x'.($cur+2*$isz).$fmt.$npos, $$data;
     $cur+=$recordlen;
     return (unpack('x'.($stroff+$key).$sfmt, $$data), @list);
   };
+
+  return wantarray ? ($it, $nrecords) : $it;
 }
 
 sub id_index_iterator {
@@ -233,12 +235,19 @@ sub id_index_iterator {
 		   $pos+$I->_intsize+$nrecords*$recordlen);
   my $fmt=$I->intfmt.'2';
 
-  return sub {
+  my $it=sub {
     return if $cur>=$end;
     my @l=unpack 'x'.$cur.$fmt, $$data;
     $cur+=$recordlen;
     return @l;
   };
+
+  return wantarray ? ($it, $nrecords) : $it;
+}
+
+sub is_datapos {
+  my ($I, $pos)=@_;
+  return $pos<$I->mainidx;
 }
 
 sub _e {$_[0]->_rollback; die $_[1]}
@@ -1511,6 +1520,16 @@ To check if the result is a data record array or another index use this code:
 
 looks up a data record by its ID. Returns the data record's position.
 
+=head2 $boolean=$db-E<gt>is_datapos(POS)
+
+returns true if C<$pos> points to the data record space.
+
+This method is simply a shortcut for
+
+  $pos < $db->mainidx
+
+A true result does not mean it is safe to use C<$pos> in C<data_record()>.
+
 =head2 $rec=$db-E<gt>data_record(POS)
 
 given a position fetches a data record. C<$res> is an array reference
@@ -1534,17 +1553,27 @@ otherwise only valid ones.
 
 =head2 $it=$db-E<gt>index_iterator(POS)
 
+=head2 ($it, $nitems)=$db-E<gt>index_iterator(POS)
+
 iterate over an index given by its position. The iterator returns
 a partial key and a position list:
 
   ($partkey, @positions)=$it->()
 
+If called in array context the iterator and the number of items it will
+iterate is returned.
+
 =head2 $it=$db-E<gt>id_index_iterator
+
+=head2 ($it, $nitems)=$db-E<gt>id_index_iterator
 
 iterate over the ID index. The iterator returns 2 elements, the ID
 and the data record position:
 
   ($id, $position)=$it->()
+
+If called in array context the iterator and the number of items it will
+iterate is returned.
 
 =head2 ($id, $pos)=$db-E<gt>insert([[KEY1, KEY2, ....], SORT, DATA])
 

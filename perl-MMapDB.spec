@@ -2,10 +2,11 @@ Name:         perl-MMapDB
 License:      Artistic License
 Group:        Development/Libraries/Perl
 Requires:     perl = %{perl_version} perl-File-Map
+BuildRequires: perl = %{perl_version} perl-File-Map
 Autoreqprov:  on
 Summary:      MMapDB
-Version:      0.04
-Release:      1
+Version:      0.05
+Release:      2
 Source:       MMapDB-%{version}.tar.gz
 BuildRoot:    %{_tmppath}/%{name}-%{version}-build
 

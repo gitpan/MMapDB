@@ -522,6 +522,15 @@ METHODS
   $position=$db->id_index_lookup(ID)
     looks up a data record by its ID. Returns the data record's position.
 
+  $boolean=$db->is_datapos(POS)
+    returns true if $pos points to the data record space.
+
+    This method is simply a shortcut for
+
+      $pos < $db->mainidx
+
+    A true result does not mean it is safe to use $pos in "data_record()".
+
   $rec=$db->data_record(POS)
     given a position fetches a data record. $res is an array reference with
     the following structure:
@@ -541,16 +550,24 @@ METHODS
     otherwise only valid ones.
 
   $it=$db->index_iterator(POS)
+  ($it, $nitems)=$db->index_iterator(POS)
     iterate over an index given by its position. The iterator returns a
     partial key and a position list:
 
       ($partkey, @positions)=$it->()
 
+    If called in array context the iterator and the number of items it will
+    iterate is returned.
+
   $it=$db->id_index_iterator
+  ($it, $nitems)=$db->id_index_iterator
     iterate over the ID index. The iterator returns 2 elements, the ID and
     the data record position:
 
       ($id, $position)=$it->()
+
+    If called in array context the iterator and the number of items it will
+    iterate is returned.
 
   ($id, $pos)=$db->insert([[KEY1, KEY2, ....], SORT, DATA])
   ($id, $pos)=$db->insert([[KEY1, KEY2, ....], SORT, DATA, ID])
