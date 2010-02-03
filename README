@@ -213,6 +213,12 @@ CONCEPTS
             [DATAREC],
             ...]
 
+    Note also, the root element is always a hash. The following is invalid:
+
+     $main_index=[[DATAREC1],
+                  [DATAREC2],
+                  ...]
+
   Accessing a database
     To use a database it must be connected. Once connected a database is
     readonly. You will always read the same values regardless of other
@@ -286,20 +292,25 @@ CONCEPTS
         64 bit in native byte order. But is not always implemented.
 
   Iterators
-    Some "MMapDB" methods return iterators. An iterator is a function
-    reference (also called closure) that if called returns one item at a
-    time. When there are no more items an empty list or "undef" is returned.
+    Some "MMapDB" methods return iterators. An iterator is a blessed
+    function reference (also called closure) that if called returns one item
+    at a time. When there are no more items an empty list or "undef" is
+    returned.
 
     If you haven't heard of this concept yet perl itself has an iterator
     attached to each hash. The "each" operation returns a key/value pair
     until there is no more.
 
-    Iterators are used this way:
+    Iterators are mainly used this way:
 
       $it=$db->...;       # create an iterator
       while( @item=$it->() ) {
         # use @item
       }
+
+    As mentioned, iterators are also objects. They have methods to fetch the
+    number of elements they will traverse or to position the iterator to a
+    certain element.
 
   Error Conditions
     Some programmers believe exceptions are the right method of error
@@ -378,13 +389,68 @@ CONCEPTS
 
         can't lock or unlock
 
+    *   E_RANGE
+
+        attempt move an iterator position out of its range
+
+    *   E_NOT_IMPLEMENTED
+
+        function not implemented
+
+  UTF8
+    As of version 0.07 "MMapDB" supports UTF8 data. What does that mean?
+
+    For each string perl maintains a flag that says whether the string is
+    stored in UTF8 or not. "MMapDB" stores and retrieves this flag along
+    with the string itself.
+
+    For example take the string "\320\263\321\200\321\203\321\210\320\260".
+    With the UTF8 flag unset it is just a bunch of octets. But if the flag
+    is set the string suddenly becomes these characters
+    "\x{433}\x{440}\x{443}\x{448}\x{430}" or "Ð³Ñ€ÑƒÑˆÐ°" which means "pear" in
+    Russian.
+
+    Note, with the flag unset the length of our string is 10 which is the
+    number of octets. But if the flag is set it is 5 which is the number of
+    characters.
+
+    So, although the octet sequences representing both strings (with and
+    without the flag) equal the strings themselves differ.
+
+    With "MMapDB", if something is stored under an UTF8 key it can be
+    retrieved also only by the UTF8 key.
+
+  The database format
+    With version 0.07 UTF8 support was introduced into "MMapDB". This
+    required a slight change of the database on-disk format. Now the
+    database format is encoded in the magic number of the database file. By
+    now there are 2 formats defined:
+
+    *   Format 0 --> magic number: MMDB
+
+    *   Format 1 --> magic number: MMDC
+
+    "MMapDB" reads and writes both formats. By default new databases are
+    written in the most up-to-date format and the format of existing ones is
+    not changed.
+
+    If you want to write a certain format for a new database or convert an
+    existing database to an other format specify it as parameter to the
+    "begin()" method.
+
+    If you want to write the newest format use -1 as format specifier.
+
 METHODS
   $dh=MMapDB->new( KEY=>VALUE, ... )
   $new=$db->new( KEY=>VALUE, ... )
+  $dh=MMapDB->new( $filename )
+  $new=$db->new( $filename )
     creates or clones a database handle. If there is an active transaction
     it is rolled back for the clone.
 
-    Parameters are passed as (KEY,VALUE) pairs:
+    If only one parameter is passed it is taken as the database filename.
+
+    Otherwise parameters are passed as (KEY,VALUE) pairs:
 
     *   filename
 
@@ -451,7 +517,15 @@ METHODS
     disconnects from a database.
 
   $success=$db->begin
-    begins a transaction
+  $success=$db->begin($dbformat)
+    begins a transaction. Returns the database object.
+
+    If the $dbformat parameter is ommitted the database format is unchanged.
+
+    If 0 is given the database is written in "MMDB" format. If 1 is given
+    "MMDC" format is written.
+
+    If -1 is given always the newest format is written.
 
   $success=$db->commit
   $success=$db->commit(1)
@@ -502,6 +576,26 @@ METHODS
     becomes the current version. For other processes running in parallel
     this looks just like another transaction being committed.
 
+  $db->dbformat_in
+  $db->dbformat_out
+    when a database is newly created it is written in the format passed to
+    the "begin()" method. When it is connected later via "start()"
+    "dbformat_in()" contains this format. So, a database user can check if a
+    database file meets his expectations.
+
+    Within a transaction "dbformat_out()" contains the format of the
+    database currently being written.
+
+  $db->flags
+    contains a number in the range between 0 and 255 that represents the
+    "flags" byte of the database.
+
+    It is written to the database file by the "begin()" method and read by
+    "start()".
+
+    Using this field is not recommended. It is considered experimental and
+    may disappear in the future.
+
   @positions=$db->index_lookup(INDEXPOS, KEY1, KEY2, ...)
     looks up the key "[KEY1, KEY2, ...]" in the index given by its position
     "INDEXPOS". Returns a list of positions.
@@ -549,6 +643,9 @@ METHODS
     If a true value is passed as parameter only deleted records are found
     otherwise only valid ones.
 
+    $it is an MMapDB::Iterator object. Invoking any method on this iterator
+    results in a "E_NOT_IMPLEMENTED" exception.
+
   $it=$db->index_iterator(POS)
   ($it, $nitems)=$db->index_iterator(POS)
     iterate over an index given by its position. The iterator returns a
@@ -559,6 +656,8 @@ METHODS
     If called in array context the iterator and the number of items it will
     iterate is returned.
 
+    $it is an MMapDB::Iterator object.
+
   $it=$db->id_index_iterator
   ($it, $nitems)=$db->id_index_iterator
     iterate over the ID index. The iterator returns 2 elements, the ID and
@@ -568,6 +667,8 @@ METHODS
 
     If called in array context the iterator and the number of items it will
     iterate is returned.
+
+    $it is an MMapDB::Iterator object.
 
   ($id, $pos)=$db->insert([[KEY1, KEY2, ....], SORT, DATA])
   ($id, $pos)=$db->insert([[KEY1, KEY2, ....], SORT, DATA, ID])
@@ -614,7 +715,40 @@ METHODS
 
       $db->data_record( $db->id_index_lookup(42) )
 
-  EXPORT
+The "MMapDB::Iterator" class
+    To this class belong all iterators documented here. An iterator is
+    mainly simply called as function reference to fetch the next element:
+
+     $it->();
+
+    But sometimes one wants to reposition an iterator or ask it a question.
+    Here this class comes into play.
+
+    Some iterators don't implement all of the methods. In this case an
+    "E_NOT_IMPLEMENTED" exception is thrown.
+
+    The index and id-index iterators implement all methods.
+
+  $it->nth($n)
+  @el=$it->nth($n)
+    If called in void context the iterator position is moved to the $n'th
+    element. The element read by the next "$it->()" call will be this one.
+
+    If called in other context the iterator position is moved to the $n'th
+    element which then is returned. The next "$it->()" call will return the
+    "($n+1)"'th element.
+
+    An attempt to move the position outside its boundaries causes an
+    "E_RANGE" exception.
+
+  $it->cur
+    returns the current iterator position as an integer starting at 0 and
+    counting upwards by 1 for each element.
+
+  $it->nelem
+    returns the number of elements that the iterator will traverse.
+
+EXPORT
     None by default.
 
     Error constants are imported by the ":error" tag.
@@ -701,7 +835,12 @@ DISK LAYOUT
 
     *   the string table
 
+  Differences between database format 0 and 1
+    Format 0 and 1 are in great parts equal. Only the database header and
+    the string table entry slightly differ.
+
   The database header
+   Database Format 0
     At start of each database comes a descriptor:
 
      +----------------------------------+
@@ -733,6 +872,33 @@ DISK LAYOUT
 
     The "STRING TABLE POSITION" keeps the offset of the string table at the
     end of the file.
+
+   Database Format 1
+    At start of each database comes a descriptor:
+
+     +----------------------------------+
+     | MAGIC NUMBER (4 bytes) == 'MMDC' |
+     +----------------------------------+
+     | FORMAT (1 byte)                  |
+     +----------------------------------+
+     | FLAGS  (1 byte)                  |
+     +----------------------------------+
+     | 2 bytes reserved                 |
+     +----------------------------------+
+     | MAIN INDEX POSITION (S bytes)    |
+     +----------------------------------+
+     | ID INDEX POSITION (S bytes)      |
+     +----------------------------------+
+     | NEXT AVAILABLE ID (S bytes)      |
+     +----------------------------------+
+     | STRING TABLE POSITION (S bytes)  |
+     +----------------------------------+
+
+    In format 1 the database header sightly differs. The magic number is now
+    "MMDC" instead of "MMDB". One of the reserved bytes following the format
+    indicator is used as flags field.
+
+    All other fields remain the same.
 
   Data Records
     Just after the descriptor follows an arbitrary umber of data records. In
@@ -814,18 +980,49 @@ DISK LAYOUT
     file.
 
   The string table
+   Database Format 0
     The string table is located at the end of the database file that so far
     consists only of integers. There is no structure in the string table.
     All strings are simply padded to the next integer boundary and
     concatenated.
 
-    Each string is encoded with the "F/a* x!S" pack-format.
+    Each string is encoded with the "F/a* x!S" pack-format:
+
+     +----------------------------------+
+     | LENGTH (S bytes)                 |
+     +----------------------------------+
+     ¦                                  ¦
+     ¦ OCTETS (LENGTH bytes)            ¦
+     ¦                                  ¦
+     +----------------------------------+
+     ¦                                  ¦
+     ¦ padding                          ¦
+     ¦                                  ¦
+     +----------------------------------+
+
+   Database Format 1
+    In database format 1 a byte representing the utf8-ness is appended to
+    each string. The pack-format "F/a*C x!S" is used:
+
+     +----------------------------------+
+     | LENGTH (S bytes)                 |
+     +----------------------------------+
+     ¦                                  ¦
+     ¦ OCTETS (LENGTH bytes)            ¦
+     ¦                                  ¦
+     +----------------------------------+
+     ¦ UTF8 INDICATOR (1 byte)          ¦
+     +----------------------------------+
+     ¦                                  ¦
+     ¦ padding                          ¦
+     ¦                                  ¦
+     +----------------------------------+
 
 AUTHOR
     Torsten Förtsch, <torsten.foertsch@gmx.net>
 
 COPYRIGHT AND LICENSE
-    Copyright (C) 2009 by Torsten Förtsch
+    Copyright (C) 2009-2010 by Torsten Förtsch
 
     This library is free software; you can redistribute it and/or modify it
     under the same terms as Perl itself, either Perl version 5.10.0 or, at

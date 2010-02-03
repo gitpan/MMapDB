@@ -8,20 +8,21 @@ no warnings qw/uninitialized/;
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 # keep this in mind
 use integer;
-use bytes;
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 use Fcntl qw/:seek :flock/;
 use File::Spec;
 use File::Map qw/map_handle/;
 use Exporter qw/import/;
+use Encode ();
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.06';
+  our $VERSION = '0.07';
   our %EXPORT_TAGS=
     (
      error=>[qw/E_READONLY E_TWICE E_TRANSACTION E_FULL E_DUPLICATE
-		E_OPEN E_READ E_WRITE E_CLOSE E_RENAME E_TRUNCATE E_LOCK/],
+		E_OPEN E_READ E_WRITE E_CLOSE E_RENAME E_TRUNCATE E_LOCK
+		E_RANGE E_NOT_IMPLEMENTED/],
     );
   my %seen;
   undef @seen{map {@$_} values %EXPORT_TAGS};
@@ -36,10 +37,11 @@ use Exporter qw/import/;
     # define attributes and implement accessor methods
     # !! keep in sync with MMapDB.xs !!
     @attributes=(qw/filename readonly intfmt _data _rwdata _intsize _stringfmt
-		    _stringtbl mainidx _ididx main_index id_index/,
-		 # the next fields are valid only within a transaction
-		 qw/_nextid _idmap _tmpfh _tmpname _stringfh _stringmap
-		    _strpos lockfile/);
+		    _stringtbl mainidx _ididx main_index id_index
+		    _nextid _idmap _tmpfh _tmpname _stringfh _stringmap
+		    _strpos lockfile flags dbformat_in dbformat_out
+		    _stringfmt_out
+		   /);
     for( my $i=0; $i<@attributes; $i++ ) {
       my $method_num=$i;
       ## no critic
@@ -51,9 +53,11 @@ use Exporter qw/import/;
   }
 }
 
+my @dbformats=qw/MMDB MMDC/;
+my %dbformats=do { my $i=0; map {($_=>$i++)} @dbformats };
+
 BEGIN {
   use constant {
-    MAGICNUMBER   => 'MMDB',
     FORMATVERSION => 0,		# magic number position (in bytes)
     INTFMT        => 4,		# INTFMT byte position (in bytes)
     BASEOFFSET    => 8,
@@ -62,6 +66,14 @@ BEGIN {
     NEXTID        => 2,		# (in words)
     STRINGTBL     => 3,		# (in words)
     DATASTART     => 4,		# (in words)
+
+    DBFMT0        => 0,		# MMDB format
+    DBFMT1        => 1,		# MMDC format with utf8 support
+
+    # iterator questions
+    IT_NTH        =>0,		# reposition iterator
+    IT_CUR        =>1, 		# what is the current index
+    IT_NELEM      =>2,          # how many elements does it iterate over
 
     E_READONLY    => \'database is read-only',
     E_TWICE       => \'can\'t insert the same ID twice',
@@ -77,8 +89,16 @@ BEGIN {
     E_SEEK        => \'can\'t move file pointer',
     E_TRUNCATE    => \'can\'t truncate file',
     E_LOCK        => \'can\'t (un)lock lockfile',
+    E_RANGE       => \'attempt move iterator out of its range',
+    E_NOT_IMPLEMENTED => \'function not implemented',
   };
 }
+
+#sub D {
+#  use Data::Dumper;
+#  local $Data::Dumper::Useqq=1;
+#  warn Dumper @_;
+#}
 
 sub set_intfmt {
   my ($I, $fmt)=@_;
@@ -90,7 +110,20 @@ sub set_intfmt {
 
   $I->intfmt=$fmt;
   $I->_intsize=length pack($fmt, 0);
-  $I->_stringfmt=$I->intfmt.'/a* x!'.$I->_intsize;
+
+  if( $I->dbformat_in>DBFMT0 ) {
+    # new format with utf8 support
+    $I->_stringfmt=$I->intfmt.'/a*C x!'.$I->_intsize;
+  } else {
+    $I->_stringfmt=$I->intfmt.'/a* x!'.$I->_intsize;
+  }
+
+  if( $I->dbformat_out>DBFMT0 ) {
+    # new format with utf8 support
+    $I->_stringfmt_out=$I->intfmt.'/a*C x!'.$I->_intsize;
+  } else {
+    $I->_stringfmt_out=$I->intfmt.'/a* x!'.$I->_intsize;
+  }
 
   return 1;
 }
@@ -108,15 +141,22 @@ sub new {
   } else {
     $I=bless []=>$parent;
     $I->set_intfmt('N');
+    $I->flags=0;
+    $I->dbformat_in=$#dbformats; # use the newest by default
+    $I->dbformat_out=$#dbformats; # use the newest by default
     $I->_rwdata=do {my $dummy=' '; \$dummy};
   }
 
-  while( my ($k, $v)=splice @param, 0, 2 ) {
-    if( do {no strict 'refs'; defined &$k} ) {
-      $I->$k=$v;
+  if( @param==1 ) {
+    $I->filename=$param[0];
+  } else {
+    while( my ($k, $v)=splice @param, 0, 2 ) {
+      if( do {no strict 'refs'; defined &$k} ) {
+	$I->$k=$v;
+      }
     }
+    $I->set_intfmt($I->intfmt) unless $I->intfmt eq 'N';
   }
-  $I->set_intfmt($I->intfmt) unless $I->intfmt eq 'N';
 
   return $I;
 }
@@ -160,12 +200,17 @@ sub start {
 	return unless length $dummy;
 
 	# check magic number
-	return unless substr($dummy, FORMATVERSION, 4) eq MAGICNUMBER;
+	return unless exists $dbformats{substr($dummy, FORMATVERSION, 4)};
+	$I->dbformat_out=$I->dbformat_in=
+	  $dbformats{substr($dummy, FORMATVERSION, 4)};
 
 	# read integer format
 	$fmt=unpack 'x4a', $dummy;
 	redo RETRY if( $fmt eq "\0" );
 	return unless $I->set_intfmt($fmt);
+
+	# read the byte just after the format character
+	$I->flags=unpack 'x5C', $dummy;
 
 	$I->_data=\$dummy;		# now mapped
 	$I->_rwdata=\$rwdummy;
@@ -211,14 +256,39 @@ sub index_iterator {
 		   $pos+2*$isz+$nrecords*$recordlen);
   my $stroff=$I->_stringtbl;
   my $sfmt=$I->_stringfmt;
+  my $dbfmt=$I->dbformat_in;
 
-  my $it=sub {
-    return if $cur>=$end;
-    my ($key, $npos)=unpack 'x'.$cur.$fmt.'2', $$data;
-    my @list=unpack 'x'.($cur+2*$isz).$fmt.$npos, $$data;
-    $cur+=$recordlen;
-    return (unpack('x'.($stroff+$key).$sfmt, $$data), @list);
-  };
+  my $it=MMapDB::Iterator->new
+    ( sub {
+	if( @_ ) {
+	  for( my $i=0; $i<@_; $i++ ) {
+	    if( $_[$i]==IT_NTH ) {
+	      my $nth=$_[++$i];
+	      $nth=$pos+2*$isz+$nth*$recordlen;
+	      die E_RANGE unless( $pos+2*$isz<=$nth and $nth<$end );
+	      $cur=$nth;
+	      # return in VOID context
+	      return unless defined wantarray;
+	    } elsif( $_[$i]==IT_CUR ) {
+	      return ($cur-2*$isz-$pos)/$recordlen;
+	    } elsif( $_[$i]==IT_NELEM ) {
+	      return ($end-2*$isz-$pos)/$recordlen;
+	    }
+	  }
+	}
+	return if $cur>=$end;
+	my ($key, $npos)=unpack 'x'.$cur.$fmt.'2', $$data;
+	my @list=unpack 'x'.($cur+2*$isz).$fmt.$npos, $$data;
+	$cur+=$recordlen;
+	if( $dbfmt>DBFMT0 ) {
+	  my ($str, $utf8)=unpack('x'.($stroff+$key).$sfmt, $$data);
+	  Encode::_utf8_on($str) if( $utf8 );
+	  return ($str, @list);
+	} else {
+	  return (unpack('x'.($stroff+$key).$sfmt, $$data), @list);
+	}
+      }
+    );
 
   return wantarray ? ($it, $nrecords) : $it;
 }
@@ -230,17 +300,36 @@ sub id_index_iterator {
   return sub {} unless $data;
   my $pos=$I->_ididx;
   my ($nrecords)=unpack 'x'.$pos.$I->intfmt, $$data;
-  my $recordlen=2*$I->_intsize;
-  my ($cur, $end)=($pos+$I->_intsize,
-		   $pos+$I->_intsize+$nrecords*$recordlen);
+  my $isz=$I->_intsize;
+  my $recordlen=2*$isz;
+  my ($cur, $end)=($pos+$isz,
+		   $pos+$isz+$nrecords*$recordlen);
   my $fmt=$I->intfmt.'2';
 
-  my $it=sub {
-    return if $cur>=$end;
-    my @l=unpack 'x'.$cur.$fmt, $$data;
-    $cur+=$recordlen;
-    return @l;
-  };
+  my $it=MMapDB::Iterator->new
+    ( sub {
+	if( @_ ) {
+	  for( my $i=0; $i<@_; $i++ ) {
+	    if( $_[$i]==IT_NTH ) {
+	      my $nth=$_[++$i];
+	      $nth=$pos+$isz+$nth*$recordlen;
+	      die E_RANGE unless( $pos+$isz<=$nth and $nth<$end );
+	      $cur=$nth;
+	      # return in VOID context
+	      return unless defined wantarray;
+	    } elsif( $_[$i]==IT_CUR ) {
+	      return ($cur-$isz-$pos)/$recordlen;
+	    } elsif( $_[$i]==IT_NELEM ) {
+	      return ($end-$isz-$pos)/$recordlen;
+	    }
+	  }
+	}
+	return if $cur>=$end;
+	my @l=unpack 'x'.$cur.$fmt, $$data;
+	$cur+=$recordlen;
+	return @l;
+      }
+    );
 
   return wantarray ? ($it, $nrecords) : $it;
 }
@@ -254,7 +343,7 @@ sub _e {$_[0]->_rollback; die $_[1]}
 sub _ct {$_[0]->_tmpfh or die E_TRANSACTION}
 
 sub begin {
-  my ($I)=@_;
+  my ($I, $dbfmt)=@_;
 
   $I->_e(E_TRANSACTION) if defined $I->_tmpfh;
 
@@ -269,12 +358,20 @@ sub begin {
     flock $I->lockfile, LOCK_EX or die E_LOCK;
   }
 
+  if (defined $dbfmt) {
+    $I->dbformat_out=($dbfmt==-1 ? $#dbformats : $dbfmt);
+  }
+  $I->set_intfmt($I->intfmt);	# adjust string format
+
   {
     # open tmpfile
     open my $fh, '+>', $I->_tmpname=$I->filename.'.'.$$ or die E_OPEN;
     $I->_tmpfh=$fh;		# this starts the transaction
 
-    syswrite $fh, pack('a4a', MAGICNUMBER, $I->intfmt) or $I->_e(E_WRITE);
+    # if a specific db format is defined use it.
+    syswrite $fh, pack('a4aC', $dbformats[$I->dbformat_out],
+		       $I->intfmt, $I->flags & 0xff)
+      or $I->_e(E_WRITE);
     sysseek $fh, BASEOFFSET+DATASTART*$I->_intsize, SEEK_SET or $I->_e(E_SEEK);
     truncate $fh, BASEOFFSET+DATASTART*$I->_intsize or $I->_e(E_TRUNCATE);;
   }
@@ -299,6 +396,8 @@ sub begin {
   } else {
     $I->_nextid=1;
   }
+
+  return $I;
 }
 
 # The interator() below hops over the mmapped area. This one works on the file.
@@ -345,10 +444,10 @@ sub _really_write_index {
                                 #          position to store
 
   # find the max. number of positions we have to store
-  foreach my $k (keys %$map) {
-    if( ref($map->{$k}) eq 'ARRAY' ) {
+  foreach my $v (values %$map) {
+    if( ref($v) eq 'ARRAY' ) {
       # list of data records
-      $recordlen=@{$map->{$k}} if @{$map->{$k}}>$recordlen;
+      $recordlen=@$v if @$v>$recordlen;
     }
     # else: recordlen is initialized with 1. So for subindexes there is
     #       nothing to do
@@ -360,7 +459,7 @@ sub _really_write_index {
 
   # the index itself has a 2 integer header, the recordlen and the number
   # of index records that belong to the index.
-  my $indexsize=(2*+$recordlen*keys(%$map))*$I->_intsize; # in bytes
+  my $indexsize=(2+$recordlen*keys(%$map))*$I->_intsize; # in bytes
 
   my $pos=sysseek $fh, 0, SEEK_CUR or $I->_e(E_SEEK);
 
@@ -369,7 +468,8 @@ sub _really_write_index {
 
   # and write subindices after this index
   my $strings=$I->_stringmap;
-  my $sfmt=$I->_stringfmt;
+  my $sfmt=$I->_stringfmt_out;
+  my $dbfmt=$I->dbformat_out;
   foreach my $v (values %$map) {
     if( ref($v) eq 'HASH' ) {
       # convert the subindex into a position list
@@ -383,7 +483,13 @@ sub _really_write_index {
 	$a->[0] cmp $b->[0];
       } map {
 	# fetch sort string from string table
-	[unpack('x'.$_->[0].$sfmt, $$strings), $_->[1]];
+	if( $dbfmt>DBFMT0 ) {
+	  my ($str, $utf8)=unpack('x'.$_->[0].$sfmt, $$strings);
+	  Encode::_utf8_on($str) if $utf8;
+	  [$str, $_->[1]];
+	} else {
+	  [unpack('x'.$_->[0].$sfmt, $$strings), $_->[1]];
+	}
       } @$v;
     }
   }
@@ -408,10 +514,17 @@ sub _really_write_index {
   } sort {
     $a->[1] cmp $b->[1];
   } map {
-    [$_, unpack('x'.$_.$sfmt, $$strings)];
+    if( $dbfmt>DBFMT0 ) {
+      my ($str, $utf8)=unpack('x'.$_.$sfmt, $$strings);
+      Encode::_utf8_on($str) if $utf8;
+      [$_, $str];
+    } else {
+      [$_, unpack('x'.$_.$sfmt, $$strings)];
+    }
   } keys %$map) {
     my $v=$map->{$key};
 
+    #D($key, $v);
     #warn "$prefix> idx rec: ".unpack('H*', pack($fmt, $key, 0+@$v, @$v))."\n";
 
     syswrite $fh, pack($fmt, $key, 0+@$v, @$v) or $I->_e(E_WRITE);
@@ -556,6 +669,9 @@ sub _rollback {
   undef $I->_strpos;
   undef $I->_idmap;
 
+  $I->_stringfmt_out=$I->_stringfmt;
+  $I->dbformat_out=$I->dbformat_in;
+
   if( $I->lockfile ) {
     flock $I->lockfile, LOCK_UN or die E_LOCK;
   }
@@ -606,9 +722,12 @@ sub restore {
 sub _string2pos {
   my ($I, $key)=@_;
 
-  my $strings=$I->_stringmap;
+  my $fmt=$I->_stringfmt_out;
+  my $dbfmt=$I->dbformat_out;
 
-  my $fmt=$I->_stringfmt;
+  Encode::_utf8_off($key) if $dbfmt==DBFMT0;
+
+  my $strings=$I->_stringmap;
   my $poslist=$I->_strpos;
 
   my ($low, $high)=(0, 0+@$poslist);
@@ -617,7 +736,12 @@ sub _string2pos {
   my ($cur, $rel, $curstr);
   while( $low<$high ) {
     $cur=($high+$low)/2;	# "use integer" is active, see above
-    $curstr=unpack 'x'.$poslist->[$cur].$fmt, $$strings;
+    if( $dbfmt>DBFMT0 ) {
+      ($curstr, my $utf8)=unpack 'x'.$poslist->[$cur].$fmt, $$strings;
+      Encode::_utf8_on($curstr) if $utf8;
+    } else {
+      $curstr=unpack 'x'.$poslist->[$cur].$fmt, $$strings;
+    }
     #warn "  --> looking at $curstr: low=$low, high=$high, cur=$cur\n";
     $rel=($curstr cmp $key);
     if( $rel<0 ) {
@@ -636,7 +760,19 @@ sub _string2pos {
   my $fh=$I->_stringfh;
   my $pos=sysseek $fh, 0, SEEK_CUR or $I->_e(E_SEEK);
   splice @$poslist, $low, 0, $pos+0;
-  syswrite $fh, pack($fmt, $key) or $I->_e(E_WRITE);
+  #warn "  --> inserting $pos into poslist at $low ==> @$poslist\n";
+  if( $dbfmt>DBFMT0 ) {
+    if( Encode::is_utf8($key) ) {
+      syswrite $fh, pack($fmt, Encode::encode_utf8($key), 1)
+	or $I->_e(E_WRITE);
+    } else {
+      syswrite $fh, pack($fmt, $key, 0) or $I->_e(E_WRITE);
+    }
+  } else {
+    syswrite $fh, pack($fmt, $key) or $I->_e(E_WRITE);
+  }
+
+  # XXX: optimize the remapping
 
   # remap $I->_stringmap
   undef $I->_stringmap;
@@ -650,6 +786,8 @@ sub _string2pos {
 sub insert {
   my ($I, $rec)=@_;
   #my ($I, $key, $sort, $data, $id)=@_;
+
+  #use Data::Dumper; $Data::Dumper::Useqq=1; warn Dumper $rec;
 
   $I->_ct;
 
@@ -723,9 +861,16 @@ sub delete_by_id {
     sysread($fh, $buf, $len)==$len or $I->_e(E_READ);
 
     my $strings=$I->_stringmap;
-    my $sfmt=$I->_stringfmt;
+    my $sfmt=$I->_stringfmt_out;
+    my $dbfmt=$I->dbformat_out;
     my @l=map {
-      unpack('x'.$_.$sfmt, $$strings);
+      if( $dbfmt>DBFMT0 ) {
+	my ($str, $utf8)=unpack('x'.$_.$sfmt, $$strings);
+	Encode::_utf8_on($str) if $utf8;
+	$str;
+      } else {
+	unpack('x'.$_.$sfmt, $$strings);
+      }
     } unpack($I->intfmt.($nkeys+2), $buf);
 
     my $rdata=pop @l;
@@ -792,23 +937,47 @@ sub iterator {
   my $pos=BASEOFFSET+DATASTART*$I->_intsize;
   my $end=$I->mainidx;
 
-  return sub {
-  LOOP: {
-      return if $pos>=$end;
+  return MMapDB::Iterator->new
+    (sub {
+       die E_NOT_IMPLEMENTED if @_;
+     LOOP: {
+	 return if $pos>=$end;
 
-      # valid id nkeys key1...keyn sort data
-      my ($valid, undef, $nkeys)=
-	unpack 'x'.$pos.' '.$I->intfmt.'3', ${$I->_data};
+	 # valid id nkeys key1...keyn sort data
+	 my ($valid, undef, $nkeys)=
+	   unpack 'x'.$pos.' '.$I->intfmt.'3', ${$I->_data};
 
-      if( $valid xor $show_invalid ) {
-	my $rc=$pos;
-	$pos+=$I->_intsize*($nkeys+5); # 5=(valid id nkeys sort data)
-	return $rc;
-      }
-      $pos+=$I->_intsize*($nkeys+5); # 5=(valid id nkeys sort data)
-      redo LOOP;
-    }
-  };
+	 if( $valid xor $show_invalid ) {
+	   my $rc=$pos;
+	   $pos+=$I->_intsize*($nkeys+5); # 5=(valid id nkeys sort data)
+	   return $rc;
+	 }
+	 $pos+=$I->_intsize*($nkeys+5); # 5=(valid id nkeys sort data)
+	 redo LOOP;
+       }
+     });
+}
+
+package MMapDB::Iterator;
+
+use strict;
+
+sub new {
+  my ($class, $func)=@_;
+  $class=ref($class) || $class;
+  return bless $func=>$class;
+}
+
+sub nth {
+  return $_[0]->(MMapDB::IT_NTH, $_[1]);
+}
+
+sub cur {
+  return $_[0]->(MMapDB::IT_CUR);
+}
+
+sub nelem {
+  return $_[0]->(MMapDB::IT_NELEM);
 }
 
 #######################################################################
@@ -1172,6 +1341,12 @@ to a data record and to another subindex, somthing like this:
         [DATAREC],
         ...]
 
+Note also, the root element is always a hash. The following is invalid:
+
+ $main_index=[[DATAREC1],
+              [DATAREC2],
+              ...]
+
 =head2 Accessing a database
 
 To use a database it must be connected. Once connected a database
@@ -1254,7 +1429,7 @@ The database format is defined by one of these pack format letters:
 
 =head2 Iterators
 
-Some C<MMapDB> methods return iterators. An iterator is a function
+Some C<MMapDB> methods return iterators. An iterator is a blessed function
 reference (also called closure) that if called returns one item at a time.
 When there are no more items an empty list or C<undef> is returned.
 
@@ -1262,12 +1437,16 @@ If you haven't heard of this concept yet perl itself has an iterator
 attached to each hash. The C<each> operation returns a key/value pair
 until there is no more.
 
-Iterators are used this way:
+Iterators are mainly used this way:
 
   $it=$db->...;       # create an iterator
   while( @item=$it->() ) {
     # use @item
   }
+
+As mentioned, iterators are also objects. They have methods to fetch the
+number of elements they will traverse or to position the iterator to a
+certain element.
 
 =head2 Error Conditions
 
@@ -1350,7 +1529,62 @@ can't truncate file
 
 can't lock or unlock
 
+=item * E_RANGE
+
+attempt move an iterator position out of its range
+
+=item * E_NOT_IMPLEMENTED
+
+function not implemented
+
 =back
+
+=head2 UTF8
+
+As of version 0.07 C<MMapDB> supports UTF8 data. What does that mean?
+
+For each string perl maintains a flag that says whether the string is stored
+in UTF8 or not. C<MMapDB> stores and retrieves this flag along with the string
+itself.
+
+For example take the string C<"\320\263\321\200\321\203\321\210\320\260">.
+With the UTF8 flag unset it is just a bunch of octets. But if the flag is
+set the string suddenly becomes these characters
+C<"\x{433}\x{440}\x{443}\x{448}\x{430}"> or C<груша> which means C<pear>
+in Russian.
+
+Note, with the flag unset the length of our string is 10 which is the number
+of octets. But if the flag is set it is 5 which is the number of characters.
+
+So, although the octet sequences representing both strings (with and
+without the flag) equal the strings themselves differ.
+
+With C<MMapDB>, if something is stored under an UTF8 key it can be retrieved
+also only by the UTF8 key.
+
+=head2 The database format
+
+With version 0.07 UTF8 support was introduced into C<MMapDB>. This required
+a slight change of the database on-disk format. Now the database format
+is encoded in the magic number of the database file. By now there are 2
+formats defined:
+
+=over 4
+
+=item * Format 0 --> magic number: MMDB
+
+=item * Format 1 --> magic number: MMDC
+
+=back
+
+C<MMapDB> reads and writes both formats. By default new databases are written
+in the most up-to-date format and the format of existing ones is not changed.
+
+If you want to write a certain format for a new database or convert an
+existing database to an other format specify it as parameter to the
+C<begin()> method.
+
+If you want to write the newest format use C<-1> as format specifier.
 
 =head1 METHODS
 
@@ -1358,10 +1592,16 @@ can't lock or unlock
 
 =head2 $new=$db-E<gt>new( KEY=E<gt>VALUE, ... )
 
+=head2 $dh=MMapDB-E<gt>new( $filename )
+
+=head2 $new=$db-E<gt>new( $filename )
+
 creates or clones a database handle. If there is an active transaction
 it is rolled back for the clone.
 
-Parameters are passed as (KEY,VALUE) pairs:
+If only one parameter is passed it is taken as the database filename.
+
+Otherwise parameters are passed as (KEY,VALUE) pairs:
 
 =over 4
 
@@ -1441,7 +1681,16 @@ disconnects from a database.
 
 =head2 $success=$db-E<gt>begin
 
-begins a transaction
+=head2 $success=$db-E<gt>begin($dbformat)
+
+begins a transaction. Returns the database object.
+
+If the C<$dbformat> parameter is ommitted the database format is unchanged.
+
+If C<0> is given the database is written in C<MMDB> format. If C<1> is given
+C<MMDC> format is written.
+
+If C<-1> is given always the newest format is written.
 
 =head2 $success=$db-E<gt>commit
 
@@ -1499,6 +1748,29 @@ C<$db-E<gt>filename> and invalidates the current version. So, the backup
 becomes the current version. For other processes running in parallel this
 looks just like another transaction being committed.
 
+=head2 $db->dbformat_in
+
+=head2 $db->dbformat_out
+
+when a database is newly created it is written in the format passed to
+the C<begin()> method. When it is connected later via C<start()>
+C<dbformat_in()> contains this format. So, a database user can check
+if a database file meets his expectations.
+
+Within a transaction C<dbformat_out()> contains the format of the database
+currently being written.
+
+=head2 $db->flags
+
+contains a number in the range between 0 and 255 that represents the C<flags>
+byte of the database.
+
+It is written to the database file by the C<begin()> method and read by
+C<start()>.
+
+Using this field is not recommended. It is considered experimental and may
+disappear in the future.
+
 =head2 @positions=$db-E<gt>index_lookup(INDEXPOS, KEY1, KEY2, ...)
 
 looks up the key C<[KEY1, KEY2, ...]> in the index given by its position
@@ -1551,6 +1823,10 @@ The iterator returns a data record position:
 If a true value is passed as parameter only deleted records are found
 otherwise only valid ones.
 
+C<$it> is an L<MMapDB::Iterator|/"The C<MMapDB::Iterator> class"> object.
+Invoking any method on this iterator results in a C<E_NOT_IMPLEMENTED>
+exception.
+
 =head2 $it=$db-E<gt>index_iterator(POS)
 
 =head2 ($it, $nitems)=$db-E<gt>index_iterator(POS)
@@ -1563,6 +1839,8 @@ a partial key and a position list:
 If called in array context the iterator and the number of items it will
 iterate is returned.
 
+C<$it> is an L<MMapDB::Iterator|/"The C<MMapDB::Iterator> class"> object.
+
 =head2 $it=$db-E<gt>id_index_iterator
 
 =head2 ($it, $nitems)=$db-E<gt>id_index_iterator
@@ -1574,6 +1852,8 @@ and the data record position:
 
 If called in array context the iterator and the number of items it will
 iterate is returned.
+
+C<$it> is an L<MMapDB::Iterator|/"The C<MMapDB::Iterator> class"> object.
 
 =head2 ($id, $pos)=$db-E<gt>insert([[KEY1, KEY2, ....], SORT, DATA])
 
@@ -1627,7 +1907,45 @@ returns almost the same as
 
   $db->data_record( $db->id_index_lookup(42) )
 
-=head2 EXPORT
+=head1 The C<MMapDB::Iterator> class
+
+To this class belong all iterators documented here. An iterator is mainly
+simply called as function reference to fetch the next element:
+
+ $it->();
+
+But sometimes one wants to reposition an iterator or ask it a question. Here
+this class comes into play.
+
+Some iterators don't implement all of the methods. In this case an
+C<E_NOT_IMPLEMENTED> exception is thrown.
+
+The index and id-index iterators implement all methods.
+
+=head2 $it-E<gt>nth($n)
+
+=head2 @el=$it-E<gt>nth($n)
+
+If called in void context the iterator position is moved to the C<$n>'th
+element. The element read by the next C<< $it->() >> call will be this one.
+
+If called in other context the iterator position is moved to the C<$n>'th
+element which then is returned. The next C<< $it->() >>
+call will return the C<($n+1)>'th element.
+
+An attempt to move the position outside its boundaries causes an
+C<E_RANGE> exception.
+
+=head2 $it-E<gt>cur
+
+returns the current iterator position as an integer starting at C<0> and
+counting upwards by C<1> for each element.
+
+=head2 $it-E<gt>nelem
+
+returns the number of elements that the iterator will traverse.
+
+=head1 EXPORT
 
 None by default.
 
@@ -1725,7 +2043,14 @@ The database can be divided into a few major sections:
 
 =back
 
+=head2 Differences between database format 0 and 1
+
+Format 0 and 1 are in great parts equal. Only the database header and the
+string table entry slightly differ.
+
 =head2 The database header
+
+=head3 Database Format 0
 
 At start of each database comes a descriptor:
 
@@ -1758,6 +2083,34 @@ The C<NEXT AVAILABLE ID> field contains the next ID to be allocated.
 
 The C<STRING TABLE POSITION> keeps the offset of the string table at the end
 of the file.
+
+=head3 Database Format 1
+
+At start of each database comes a descriptor:
+
+ +----------------------------------+
+ | MAGIC NUMBER (4 bytes) == 'MMDC' |
+ +----------------------------------+
+ | FORMAT (1 byte)                  |
+ +----------------------------------+
+ | FLAGS  (1 byte)                  |
+ +----------------------------------+
+ | 2 bytes reserved                 |
+ +----------------------------------+
+ | MAIN INDEX POSITION (S bytes)    |
+ +----------------------------------+
+ | ID INDEX POSITION (S bytes)      |
+ +----------------------------------+
+ | NEXT AVAILABLE ID (S bytes)      |
+ +----------------------------------+
+ | STRING TABLE POSITION (S bytes)  |
+ +----------------------------------+
+
+In format 1 the database header sightly differs. The magic number is now
+C<MMDC> instead of C<MMDB>. One of the reserved bytes following the
+format indicator is used as flags field.
+
+All other fields remain the same.
 
 =head2 Data Records
 
@@ -1841,11 +2194,44 @@ point of a data record or another index relativ to the start of the file.
 
 =head2 The string table
 
+=head3 Database Format 0
+
 The string table is located at the end of the database file that so far
 consists only of integers. There is no structure in the string table. All
 strings are simply padded to the next integer boundary and concatenated.
 
-Each string is encoded with the C<F/a* x!S> pack-format.
+Each string is encoded with the C<F/a* x!S> pack-format:
+
+ +----------------------------------+
+ | LENGTH (S bytes)                 |
+ +----------------------------------+
+ ¦                                  ¦
+ ¦ OCTETS (LENGTH bytes)            ¦
+ ¦                                  ¦
+ +----------------------------------+
+ ¦                                  ¦
+ ¦ padding                          ¦
+ ¦                                  ¦
+ +----------------------------------+
+
+=head3 Database Format 1
+
+In database format 1 a byte representing the utf8-ness is appended to
+each string. The pack-format C<F/a*C x!S> is used:
+
+ +----------------------------------+
+ | LENGTH (S bytes)                 |
+ +----------------------------------+
+ ¦                                  ¦
+ ¦ OCTETS (LENGTH bytes)            ¦
+ ¦                                  ¦
+ +----------------------------------+
+ ¦ UTF8 INDICATOR (1 byte)          ¦
+ +----------------------------------+
+ ¦                                  ¦
+ ¦ padding                          ¦
+ ¦                                  ¦
+ +----------------------------------+
 
 =head1 AUTHOR
 
@@ -1853,7 +2239,7 @@ Torsten Förtsch, E<lt>torsten.foertsch@gmx.netE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2009 by Torsten Förtsch
+Copyright (C) 2009-2010 by Torsten Förtsch
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.10.0 or,

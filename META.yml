@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                MMapDB
-version:             0.06
+version:             0.07
 abstract:            a simple database in shared memory
 license:             ~
 author:              

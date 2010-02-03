@@ -5,7 +5,7 @@ Requires:     perl = %{perl_version} perl-File-Map
 BuildRequires: perl = %{perl_version} perl-File-Map
 Autoreqprov:  on
 Summary:      MMapDB
-Version:      0.05
+Version:      0.07
 Release:      2
 Source:       MMapDB-%{version}.tar.gz
 BuildRoot:    %{_tmppath}/%{name}-%{version}-build
@@ -41,7 +41,6 @@ find $RPM_BUILD_ROOT%{_mandir}/man* -type f -print0 |
 %files
 %defattr(-, root, root)
 %{perl_vendorarch}
-%{perl_vendorarch}/auto
 %doc %{_mandir}/man3
 /var/adm/perl-modules/perl-MMapDB
 %doc MANIFEST

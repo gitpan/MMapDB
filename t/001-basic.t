@@ -9,9 +9,9 @@ use Fcntl qw/:flock/;
 my @fmts=('', undef, qw/L N J/);
 eval {my $x=pack 'Q', 0; push @fmts, 'Q'};
 #my @fmts=('');
-plan tests=>112*@fmts;
+plan tests=>132*@fmts;
 #plan 'no_plan';
-use Data::Dumper; $Data::Dumper::Useqq=1;
+#use Data::Dumper; $Data::Dumper::Useqq=1;
 
 sub doone {
   my ($fmt)=@_;
@@ -111,7 +111,7 @@ sub doone {
   my ($it, $nitems);
 
   $it=$d->id_index_iterator;
-  is ref($it), 'CODE', 'got id index iterator';
+  is ref($it), 'MMapDB::Iterator', 'got id index iterator';
   my %h;
   my $n=0;
   while( my @el=$it->() ) {
@@ -120,17 +120,39 @@ sub doone {
     is $d->is_datapos($el[1]), 1, "is_datapos() agrees";
     $n++;
   }
-  is $n, scalar keys %positions, 'got as many elements as inserted';
+  is $n, scalar keys %positions, "got as many elements as inserted";
 
   (undef, $nitems)=$d->id_index_iterator;
-  is $nitems, scalar keys %positions, 'nitems returned by id_index_iterator';
+  is $nitems, $n, "nitems returned by id_index_iterator ($n)";
+
+  is $it->nelem, $n, "id_index_iterator->nelem()=$n";
+
+  is $it->cur, $n, "id_index_iterator->cur()=$n";
+
+  $it->nth(1);			# VOID context
+  is $it->cur, 1, "id_index_iterator->cur() reset to 1";
+  $n=0;
+  $n++ while($it->());
+  is $n, scalar(keys %positions)-1, "id_index_iterator after repositioning";
+
+  {
+    my @el=$it->nth(1);
+    is $positions{$el[0]}, $el[1], 'correct element position';
+    is $it->cur, 2, "id_index_iterator->cur() after nth(1) in list context";
+  }
+
+  throws_ok {$it->nth(15)} qr/SCALAR/, 'moving iterator out of range';
+  is $@, E_RANGE, 'E_RANGE';
+
+  throws_ok {$it->nth(-1)} qr/SCALAR/, 'moving iterator out of range';
+  is $@, E_RANGE, 'E_RANGE';
 
   ##########################################################################
   # test main index iterator
   ##########################################################################
 
   $it=$d->index_iterator($d->mainidx);
-  is ref($it), 'CODE', 'got main index iterator';
+  is ref($it), 'MMapDB::Iterator', 'got main index iterator';
   $n=0;
   %h=(); undef @h{qw/key1 key2/};
   my @datapos=(1, '');		# key1: is datapos, key2: is not
@@ -144,6 +166,28 @@ sub doone {
 
   (undef, $nitems)=$d->index_iterator($d->mainidx);
   is $nitems, 2, 'nitems returned by index_iterator';
+
+  is $it->nelem, 2, "index_iterator->nelem()=$n";
+
+  is $it->cur, 2, "index_iterator->cur()=$n";
+
+  $it->nth(1);			# VOID context
+  is $it->cur, 1, "index_iterator->cur() reset to 1";
+  $n=0;
+  $n++ while($it->());
+  is $n, 1, "index_iterator after repositioning";
+
+  {
+    my @el=$it->nth(1);
+    is $el[0], "key2", 'correct element position';
+    is $it->cur, 2, "index_iterator->cur() after nth(1) in list context";
+  }
+
+  throws_ok {$it->nth(15)} qr/SCALAR/, 'moving iterator out of range';
+  is $@, E_RANGE, 'E_RANGE';
+
+  throws_ok {$it->nth(-1)} qr/SCALAR/, 'moving iterator out of range';
+  is $@, E_RANGE, 'E_RANGE';
 
   ##########################################################################
   # test index lookup

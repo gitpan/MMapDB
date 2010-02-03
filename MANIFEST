@@ -7,6 +7,7 @@ mk_README.sh
 t/000-load.t
 t/001-basic.t
 t/002-benchmark.t
+t/003-utf8.t
 t/pod-coverage.t
 t/pod.t
 lib/MMapDB.pm

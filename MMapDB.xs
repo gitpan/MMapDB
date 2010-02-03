@@ -40,6 +40,10 @@ typedef AV* MMapDB;
 # define MMDB_STRINGMAP     17
 # define MMDB_STRPOS        18
 # define MMDB_LOCKFILE      19
+# define MMDB_FLAGS         20	/* 1 Byte, not used by now */
+# define MMDB_DBFORMAT_IN   21
+# define MMDB_DBFORMAT_OUT  22
+# define MMDB_STRINGFMT_OUT 23
 
 # define identity(v) (v)
 
@@ -54,12 +58,35 @@ typedef AV* MMapDB;
 /* reads the length of a string given by its position from the string table */
 /* pos: position in host byte order */
 /* t: string table pointer */
-# define xSl(type, cnv, t, pos) (cnv(((type*)((char*)(t)+(pos)))[0]))
+/*# define xSl(type, cnv, t, pos) (cnv(((type*)((char*)(t)+(pos)))[0]))*/
+# define xSl(type, cnv, t, pos) \
+    xI(type, cnv, ((type*)xSp(type, cnv, (t), (pos)))[-1])
+
+# define xSutf8(type, cnv, t, pos) \
+    ((int)xSp(type, cnv, (t), (pos))[xSl(type, cnv, (t), (pos))])
 
 INLINE int
 cmp(const void* p1, int p1len, const void* p2, int p2len) {
   int rc=memcmp(p1, p2, p1len<p2len?p1len:p2len);
   return rc ? rc : p1len==p2len ? 0 : p1len<p2len ? -1 : 1;
+}
+
+INLINE int
+cmp1(const void* p1, int p1len, int p1utf8,
+     const void* p2, int p2len, int p2utf8) {
+  if(0) {
+    warn("Comparing %.*s (is %sutf (%x)) and %.*s (is %sutf (%x))\n",
+         p1len, (char*)p1, (p1utf8?"":"not "), p1utf8,
+         p2len, (char*)p2, (p2utf8?"":"not "), p2utf8);
+  }
+  int rc=memcmp(p1, p2, p1len<p2len?p1len:p2len);
+  if( rc  ) return rc;
+  if( p1len==p2len ) {
+    if(!p1utf8 == !p2utf8) return 0;
+    if( p2utf8 ) return -1;
+    return 1;
+  }
+  return p1len<p2len ? -1 : 1;
 }
 
 # define GENFN(type, fmt, cnv)						\
@@ -77,7 +104,8 @@ cmp(const void* p1, int p1len, const void* p2, int p2len) {
   }									\
 									\
   static void*								\
-  idx_lookup_##fmt(const char* k, int klen, const void* kidx,		\
+  idx_lookup_##fmt(const char* k, int klen, int dbfmt, int kutf8,	\
+                   const void* kidx,					\
 		   const void* strtbl, UV dataend,			\
 		   /* output */ int *isidx, UV* nextpos) {		\
     const type* idx=kidx;						\
@@ -88,9 +116,17 @@ cmp(const void* p1, int p1len, const void* p2, int p2len) {
     while( low<high ) {							\
       cur=(high+low)/2;							\
       curoff=xI(type, cnv, idx[rlen*cur]);				\
-      rel=cmp(xSp(type, cnv, strtbl, curoff),				\
-	      xSl(type, cnv, strtbl, curoff),				\
-	      k, klen);							\
+      if( dbfmt==0 ) {							\
+        rel=cmp(xSp(type, cnv, strtbl, curoff),				\
+	        xSl(type, cnv, strtbl, curoff),				\
+	        k, klen);						\
+      } else {	   							\
+        rel=cmp1(xSp(type, cnv, strtbl, curoff),			\
+	         xSl(type, cnv, strtbl, curoff),			\
+	         xSutf8(type, cnv, strtbl, curoff),			\
+	         k, klen, kutf8);					\
+        if(0) warn("  --> rel=%d\n", rel);	    	  		\
+      }		   							\
       if(rel<0) {							\
 	low=cur+1;							\
       } else if(rel>0) {						\
@@ -126,9 +162,9 @@ cmp(const void* p1, int p1len, const void* p2, int p2len) {
   }									\
 									\
   static AV*								\
-  drec_##fmt(pTHX_ const void* _rec, const void* _strtbl) {		\
+  drec_##fmt(pTHX_ const void* _rec, int dbfmt, const void* _strtbl) {	\
     const type* rec=_rec;						\
-    const type* lenp;							\
+    type stroff;							\
     const char* strtbl=_strtbl;						\
     type id, nkeys, i;							\
     AV* av=newAV();							\
@@ -136,19 +172,24 @@ cmp(const void* p1, int p1len, const void* p2, int p2len) {
     SV *sv;								\
 									\
     rec++;      /* skip valid flag */					\
-    id=xI(type, cnv, *rec++);						\
-    nkeys=xI(type, cnv, *rec++);					\
+    id=xI(type, cnv, *rec++);	  /* read ID */				\
+    nkeys=xI(type, cnv, *rec++);  /* read NKEYS */			\
     av_extend(av, nkeys);						\
 									\
     for(i=0; i<nkeys; i++) {						\
-      lenp=(const type*)(strtbl+xI(type, cnv, *rec++));			\
+      /* read next string position */ 					\
+      stroff=xI(type, cnv, *rec++);					\
       sv=newSV(0);							\
       SvUPGRADE(sv, SVt_PV);						\
       SvPOK_only(sv);							\
-      SvPV_set(sv, (char*)(lenp+1));					\
+      /* set the string itself */					\
+      SvPV_set(sv, xSp(type, cnv, strtbl, stroff)); 			\
       SvLEN_set(sv, 0);							\
-      SvCUR_set(sv, xI(type, cnv, *lenp));				\
+      SvCUR_set(sv, xSl(type, cnv, strtbl, stroff));			\
       SvREADONLY_on(sv);						\
+      if( dbfmt>0 ) {							\
+        if( xSutf8(type, cnv, strtbl, stroff) ) SvUTF8_on(sv);		\
+      }									\
       av_push(av, sv);							\
     }									\
     									\
@@ -156,14 +197,19 @@ cmp(const void* p1, int p1len, const void* p2, int p2len) {
     av_push(res, newRV_noinc((SV*)av));					\
 									\
     for( i=0; i<2; i++ ) {						\
-      lenp=(const type*)(strtbl+xI(type, cnv, *rec++));			\
+      /* read next string position */ 					\
+      stroff=xI(type, cnv, *rec++);					\
       sv=newSV(0);							\
       SvUPGRADE(sv, SVt_PV);						\
       SvPOK_only(sv);							\
-      SvPV_set(sv, (char*)(lenp+1));					\
+      /* set the string itself */					\
+      SvPV_set(sv, xSp(type, cnv, strtbl, stroff)); 			\
       SvLEN_set(sv, 0);							\
-      SvCUR_set(sv, xI(type, cnv, *lenp));				\
+      SvCUR_set(sv, xSl(type, cnv, strtbl, stroff));			\
       SvREADONLY_on(sv);						\
+      if( dbfmt>0 ) {							\
+        if( xSutf8(type, cnv, strtbl, stroff) ) SvUTF8_on(sv);		\
+      }									\
       av_push(res, sv);							\
     }									\
     av_push(res, newSVuv(id));						\
@@ -177,12 +223,13 @@ GENFN(U32,     N, ntohl)
 GENFN(U64TYPE, Q, identity)
 # endif
 
-typedef void* (*idx_lookup)(const char *k, int klen, const void *kidx,
+typedef void* (*idx_lookup)(const char *k, int klen, int dbfmt, int kutf8,
+	      		    const void *kidx,
 			    const void *strtbl, UV dataend,
 			    /* output params */
 			    int* isidx, UV* nextpos);
 typedef void (*pushresult)(pTHX_ const void* _descr, SV** sp);
-typedef AV* (*drec)(pTHX_ const void* _rec, const void* _strtbl);
+typedef AV* (*drec)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
 typedef UV (*ididx_lookup)(UV id, const void *kidx);
 
 # define USEFN(fmt) {idx_lookup_##fmt, pushresult_##fmt, ididx_lookup_##fmt, \
@@ -238,7 +285,7 @@ index_lookup(I, ...)
       char *datap, *intfmt, *keyp;
       SV **svp=av_fetch(I, MMDB_DATA, 0);
       void *strtbl, *found=0;
-      UV dataend;
+      UV dataend, dbfmt;
       int i, isidx=1;
 
       if( expect_false(!(svp && SvROK(*svp))) ) goto END;
@@ -247,16 +294,16 @@ index_lookup(I, ...)
       intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
       strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
       dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+      dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
       for(i=2; i<items && isidx; i++) {
 	keyp=SvPV(ST(i), keylen);
-	found=L(intfmt[0],idx)(keyp, keylen, datap+pos, strtbl, dataend,
+	found=L(intfmt[0],idx)(keyp, keylen, dbfmt, SvUTF8(ST(i)), datap+pos,
+			       strtbl, dataend,
 			       &isidx, &pos);
-	/* don't know what to expect here */
 	if(!found) goto END;
       }
 
-      /* but if we are here it is probably a hit */
       if( expect_true(found && i==items) ) {
 	L(intfmt[0],pres)(aTHX_ found, sp);
 	/* pres() calls PUTPACK. So, we must return here */
@@ -297,7 +344,7 @@ data_record(I, ...)
     if( items>1 ) {
       UV pos=SvUV(ST(1));
       char *datap, *intfmt;
-      UV dataend, stroff;
+      UV dataend, stroff, dbfmt;
       SV **svp=av_fetch(I, MMDB_DATA, 0);
       AV* av;
 
@@ -305,12 +352,13 @@ data_record(I, ...)
       datap=SvPV_nolen(SvRV(*svp));
 
       dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+      dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
       if( expect_true(pos<dataend) ) {
 	intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
 	stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
 
-	av=L(intfmt[0],drec)(aTHX_ datap+pos, datap+stroff);
+	av=L(intfmt[0],drec)(aTHX_ datap+pos, dbfmt, datap+stroff);
 	PUSHs(sv_2mortal(newRV_noinc((SV*)av)));
       }
     }
