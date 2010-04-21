@@ -912,9 +912,9 @@ DISK LAYOUT
      +----------------------------------+
      | NKEYS (S bytes)                  |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ KEY POSITIONS (NKEYS * S bytes)  ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ KEY POSITIONS (NKEYS * S bytes)  Â¦
+     Â¦                                  Â¦
      +----------------------------------+
      | SORT POSITION                    |
      +----------------------------------+
@@ -948,9 +948,9 @@ DISK LAYOUT
      +----------------------------------+
      | RECORDLEN (S bytes)              |  in units of integers
      +----------------------------------+
-     ¦                                  ¦
-     ¦ constant length records          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ constant length records          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
     The record length is a property of the index itself. It is the length of
@@ -964,13 +964,13 @@ DISK LAYOUT
      +----------------------------------+
      | NPOS (S bytes)                   |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ POSITION LIST (NPOS * S bytes)   ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ POSITION LIST (NPOS * S bytes)   Â¦
+     Â¦                                  Â¦
      +----------------------------------+
-     ¦                                  ¦
-     ¦ padding up to RECORDLEN          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ padding up to RECORDLEN          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
     The "KEY POSITION" contains the offset of the record's partial key from
@@ -991,13 +991,13 @@ DISK LAYOUT
      +----------------------------------+
      | LENGTH (S bytes)                 |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ OCTETS (LENGTH bytes)            ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ OCTETS (LENGTH bytes)            Â¦
+     Â¦                                  Â¦
      +----------------------------------+
-     ¦                                  ¦
-     ¦ padding                          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ padding                          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
    Database Format 1
@@ -1007,22 +1007,22 @@ DISK LAYOUT
      +----------------------------------+
      | LENGTH (S bytes)                 |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ OCTETS (LENGTH bytes)            ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ OCTETS (LENGTH bytes)            Â¦
+     Â¦                                  Â¦
      +----------------------------------+
-     ¦ UTF8 INDICATOR (1 byte)          ¦
+     Â¦ UTF8 INDICATOR (1 byte)          Â¦
      +----------------------------------+
-     ¦                                  ¦
-     ¦ padding                          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ padding                          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
 AUTHOR
-    Torsten Förtsch, <torsten.foertsch@gmx.net>
+    Torsten FÃ¶rtsch, <torsten.foertsch@gmx.net>
 
 COPYRIGHT AND LICENSE
-    Copyright (C) 2009-2010 by Torsten Förtsch
+    Copyright (C) 2009-2010 by Torsten FÃ¶rtsch
 
     This library is free software; you can redistribute it and/or modify it
     under the same terms as Perl itself, either Perl version 5.10.0 or, at

@@ -17,7 +17,7 @@ use Exporter qw/import/;
 use Encode ();
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.07';
+  our $VERSION = '0.08';
   our %EXPORT_TAGS=
     (
      error=>[qw/E_READONLY E_TWICE E_TRANSACTION E_FULL E_DUPLICATE
