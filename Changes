@@ -1,5 +1,15 @@
 Revision history for Perl extension MMapDB.
 
+0.10  Fri May 14 13:58:13 CEST 2010
+      - make references to the MMapDB object from MMapDB::_base objects
+        (tied interface) weak.
+
+0.09  Mon May  3 19:54:25 CEST 2010
+      - declare @attributes as 'our'
+      - data_value, data_sort accessors
+      - DATAMODE_SIMPLE
+      - untie in stop() to break circular refs
+
 0.08  Wed Apr 21 10:38:55 CEST 2010
       - make POD coverage happy
 

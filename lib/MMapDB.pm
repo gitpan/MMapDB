@@ -17,9 +17,10 @@ use Exporter qw/import/;
 use Encode ();
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.08';
+  our $VERSION = '0.10';
   our %EXPORT_TAGS=
     (
+     mode =>[qw/DATAMODE_NORMAL DATAMODE_SIMPLE/],
      error=>[qw/E_READONLY E_TWICE E_TRANSACTION E_FULL E_DUPLICATE
 		E_OPEN E_READ E_WRITE E_CLOSE E_RENAME E_TRUNCATE E_LOCK
 		E_RANGE E_NOT_IMPLEMENTED/],
@@ -32,7 +33,7 @@ use Encode ();
   require XSLoader;
   XSLoader::load('MMapDB', $VERSION);
 
-  my @attributes;
+  our @attributes;
   BEGIN {
     # define attributes and implement accessor methods
     # !! keep in sync with MMapDB.xs !!
@@ -74,6 +75,9 @@ BEGIN {
     IT_NTH        =>0,		# reposition iterator
     IT_CUR        =>1, 		# what is the current index
     IT_NELEM      =>2,          # how many elements does it iterate over
+
+    DATAMODE_NORMAL=>0,
+    DATAMODE_SIMPLE=>1,
 
     E_READONLY    => \'database is read-only',
     E_TWICE       => \'can\'t insert the same ID twice',
@@ -135,8 +139,13 @@ sub new {
   if (ref $parent) {
     $I=bless [@$parent]=>ref($parent);
     for my $k (qw/_nextid _idmap _tmpfh _tmpname _stringfh _stringmap
-		  _strpos/) {
+		  _strpos main_index id_index/) {
       undef $I->$k;
+    }
+    if( defined $I->_data ) {
+      # parameters: PARENT POS DATAMODE
+      tie %{$I->main_index=+{}}, 'MMapDB::Index', $I, $I->mainidx, 0;
+      tie %{$I->id_index=+{}}, 'MMapDB::IDIndex', $I, undef, 0;
     }
   } else {
     $I=bless []=>$parent;
@@ -151,9 +160,7 @@ sub new {
     $I->filename=$param[0];
   } else {
     while( my ($k, $v)=splice @param, 0, 2 ) {
-      if( do {no strict 'refs'; defined &$k} ) {
-	$I->$k=$v;
-      }
+      $I->$k=$v if $k=$I->can($k);
     }
     $I->set_intfmt($I->intfmt) unless $I->intfmt eq 'N';
   }
@@ -206,7 +213,10 @@ sub start {
 
 	# read integer format
 	$fmt=unpack 'x4a', $dummy;
-	redo RETRY if( $fmt eq "\0" );
+	if( $fmt eq "\0" ) {
+	  select undef, undef, undef, 0.1;
+	  redo RETRY;
+	}
 	return unless $I->set_intfmt($fmt);
 
 	# read the byte just after the format character
@@ -223,8 +233,9 @@ sub start {
 	$I->_stringtbl=unpack('x'.(BASEOFFSET+STRINGTBL*$I->_intsize).
 			      $I->intfmt, ${$I->_data});
 
-	tie %{$I->main_index=+{}}, 'MMapDB::Index', $I, $I->mainidx;
-	tie %{$I->id_index=+{}}, 'MMapDB::IDIndex', $I;
+	# parameters: PARENT POS DATAMODE
+	tie %{$I->main_index=+{}}, 'MMapDB::Index', $I, $I->mainidx, 0;
+	tie %{$I->id_index=+{}}, 'MMapDB::IDIndex', $I, undef, 0;
       }
     }
 
@@ -236,23 +247,30 @@ sub stop {
 
   $I->_e(E_TRANSACTION) if defined $I->_tmpfh;
 
+  return $I unless defined $I->_data;
+
   for my $k (qw/_data _rwdata _stringtbl mainidx _ididx/) {
     undef $I->$k;
   }
   $I->_rwdata=do {my $dummy=' '; \$dummy};
+
+  untie %{$I->main_index}; undef $I->main_index;
+  untie %{$I->id_index};   undef $I->id_index;
+
   return $I;
 }
 
 sub index_iterator {
-  my ($I, $pos)=@_;
+  my ($I, $pos, $nth)=@_;
 
   my $data=$I->_data;
-  return sub {} unless $data;
+  return sub {} unless $data and defined $pos;
   my $fmt=$I->intfmt;
   my $isz=$I->_intsize;
   my ($nrecords, $recordlen)=unpack 'x'.$pos.$fmt.'2', $$data;
+  die E_RANGE if $nth>$nrecords;
   $recordlen*=$isz;
-  my ($cur, $end)=($pos+2*$isz,
+  my ($cur, $end)=($pos+2*$isz+$nth*$recordlen,
 		   $pos+2*$isz+$nrecords*$recordlen);
   my $stroff=$I->_stringtbl;
   my $sfmt=$I->_stringfmt;
@@ -265,7 +283,7 @@ sub index_iterator {
 	    if( $_[$i]==IT_NTH ) {
 	      my $nth=$_[++$i];
 	      $nth=$pos+2*$isz+$nth*$recordlen;
-	      die E_RANGE unless( $pos+2*$isz<=$nth and $nth<$end );
+	      die E_RANGE unless( $pos+2*$isz<=$nth and $nth<=$end );
 	      $cur=$nth;
 	      # return in VOID context
 	      return unless defined wantarray;
@@ -313,7 +331,7 @@ sub id_index_iterator {
 	    if( $_[$i]==IT_NTH ) {
 	      my $nth=$_[++$i];
 	      $nth=$pos+$isz+$nth*$recordlen;
-	      die E_RANGE unless( $pos+$isz<=$nth and $nth<$end );
+	      die E_RANGE unless( $pos+$isz<=$nth and $nth<=$end );
 	      $cur=$nth;
 	      # return in VOID context
 	      return unless defined wantarray;
@@ -337,6 +355,14 @@ sub id_index_iterator {
 sub is_datapos {
   my ($I, $pos)=@_;
   return $pos<$I->mainidx;
+}
+
+sub datamode : lvalue {
+  tied(%{$_[0]->main_index})->datamode;
+}
+
+sub id_datamode : lvalue {
+  tied(%{$_[0]->id_index})->datamode;
 }
 
 sub _e {$_[0]->_rollback; die $_[1]}
@@ -684,11 +710,20 @@ sub rollback {
   $I->_rollback;
 }
 
+sub DESTROY {
+  my ($I)=@_;
+
+  $I->_rollback if defined $I->_tmpfh;
+  $I->stop;
+}
+
 sub backup {
   my ($I, $fn)=@_;
 
   $I->start;
+
   my $backup=$I->new(filename=>(defined $fn ? $fn : $I->filename.'.BACKUP'));
+
   $backup->begin;
   $backup->commit(1);
 }
@@ -984,142 +1019,179 @@ sub nelem {
 # High Level Accessor Classes
 #######################################################################
 
-package
-  MMapDB::_base;
+{
+  package
+    MMapDB::_base;
 
-use strict;
-use Carp qw/croak/;
+  use strict;
+  use Carp qw/croak/;
+  use Scalar::Util ();
 
-sub new {
-  my ($class, @param)=@_;
-  $class=ref($class) || $class;
-  return bless \@param=>$class;
+  use constant {
+    PARENT=>0,
+    POS=>1,
+    DATAMODE=>2,
+    ITERATOR=>3,
+  };
+
+  sub new {
+    my ($class, @param)=@_;
+    $class=ref($class) || $class;
+    $param[DATAMODE]=0 unless defined $param[DATAMODE];
+    Scalar::Util::weaken $param[0];
+    return bless \@param=>$class;
+  }
+
+  sub readonly {croak "Modification of a read-only value attempted";}
+
+  sub datamode : lvalue {$_[0]->[DATAMODE]}
+
+  *TIEHASH=\&new;
+  *STORE=\&readonly;
+  *DELETE=\&readonly;
+  *CLEAR=\&readonly;
+
+  *TIEARRAY=\&new;
+  *STORE=\&readonly;
+  *STORESIZE=\&readonly;
+  *EXTEND=\&readonly;
+  *DELETE=\&readonly;
+  *CLEAR=\&readonly;
+  *PUSH=\&readonly;
+  *UNSHIFT=\&readonly;
+  *POP=\&readonly;
+  *SHIFT=\&readonly;
+  *SPLICE=\&readonly;
 }
-
-sub readonly {croak "Modification of a read-only value attempted";}
 
 #######################################################################
 # Normal Index Accessor
 #######################################################################
 
-package MMapDB::Index;
+{
+  package MMapDB::Index;
 
-use strict;
-use constant {
-  PARENT=>0,
-  POS=>1,
-  ITERATOR=>2,
-};
+  use strict;
+  use constant {
+    PARENT=>MMapDB::_base::PARENT,
+    POS=>MMapDB::_base::POS,
+    DATAMODE=>MMapDB::_base::DATAMODE,
+    ITERATOR=>MMapDB::_base::ITERATOR,
+  };
 
-*TIEHASH=\&MMapDB::_base::new;
-*STORE=\&MMapDB::_base::readonly;
-*DELETE=\&MMapDB::_base::readonly;
-*CLEAR=\&MMapDB::_base::readonly;
+  {our @ISA=qw/MMapDB::_base/}
 
-sub FETCH {
-  my ($I, $key)=@_;
-  my @el=$I->[PARENT]->index_lookup($I->[POS], $key);
+  sub FETCH {
+    my ($I, $key)=@_;
+    my @el=$I->[PARENT]->index_lookup($I->[POS], $key);
 
-  return unless @el;
+    return unless @el;
 
-  my $rc;
+    my $rc;
 
-  if( @el==1 and $el[0]>=$I->[PARENT]->mainidx ) {
-    # another index
-    tie %{$rc={}}, ref($I), $I->[PARENT], $el[0];
-  } else {
-    tie @{$rc=[]}, 'MMapDB::Data', $I->[PARENT], \@el;
+    if( @el==1 and $el[0]>=$I->[PARENT]->mainidx ) {
+      # another index
+      tie %{$rc={}}, ref($I), $I->[PARENT], $el[0], $I->[DATAMODE];
+    } else {
+      tie @{$rc=[]}, 'MMapDB::Data', $I->[PARENT], \@el, $I->[DATAMODE];
+    }
+
+    return $rc;
   }
 
-  return $rc;
-}
+  sub EXISTS {
+    my ($I, $key)=@_;
+    return $I->[PARENT]->index_lookup($I->[POS], $key) ? 1 : undef;
+  }
 
-sub EXISTS {
-  my ($I, $key)=@_;
-  return $I->[PARENT]->index_lookup($I->[POS], $key) ? 1 : undef;
-}
+  sub FIRSTKEY {
+    my ($I)=@_;
+    my @el=($I->[ITERATOR]=$I->[PARENT]->index_iterator($I->[POS]))->();
+    return @el ? $el[0] : ();
+  }
 
-sub FIRSTKEY {
-  my ($I)=@_;
-  my @el=($I->[ITERATOR]=$I->[PARENT]->index_iterator($I->[POS]))->();
-  return @el ? $el[0] : ();
-}
+  sub NEXTKEY {
+    my ($I)=@_;
+    my @el=$I->[ITERATOR]->();
+    return @el ? $el[0] : ();
+  }
 
-sub NEXTKEY {
-  my ($I)=@_;
-  my @el=$I->[ITERATOR]->();
-  return @el ? $el[0] : ();
-}
-
-sub SCALAR {
-  my ($I)=@_;
-  my $pos=defined $I->[POS] ? $I->[POS] : $I->[PARENT]->_ididx;
-  my $n=unpack 'x'.$pos.$I->[PARENT]->intfmt,${$I->[PARENT]->_data};
-  return $n==0 ? $n : "$n/$n";
+  sub SCALAR {
+    my ($I)=@_;
+    my $pos=defined $I->[POS] ? $I->[POS] : $I->[PARENT]->_ididx;
+    my $n=unpack 'x'.$pos.$I->[PARENT]->intfmt,${$I->[PARENT]->_data};
+    return $n==0 ? $n : "$n/$n";
+  }
 }
 
 #######################################################################
 # ID Index Accessor
 #######################################################################
 
-package MMapDB::IDIndex;
+{
+  package MMapDB::IDIndex;
 
-use strict;
-use constant {
-  PARENT=>0,
-  ITERATOR=>2,
-};
+  use strict;
+  use constant {
+    PARENT=>MMapDB::_base::PARENT,
+    POS=>MMapDB::_base::POS,
+    DATAMODE=>MMapDB::_base::DATAMODE,
+    ITERATOR=>MMapDB::_base::ITERATOR,
+  };
 
-{our @ISA=qw/MMapDB::Index/}
+  {our @ISA=qw/MMapDB::Index/}
 
-sub FETCH {
-  $_[0]->[PARENT]->data_record($_[0]->[PARENT]->id_index_lookup($_[1]));
-}
+  sub FETCH {
+    if( $_[0]->[DATAMODE]==MMapDB::DATAMODE_SIMPLE ) {
+      $_[0]->[PARENT]->data_value($_[0]->[PARENT]->id_index_lookup($_[1]));
+    } else {
+      $_[0]->[PARENT]->data_record($_[0]->[PARENT]->id_index_lookup($_[1]));
+    }
+  }
 
-sub EXISTS {
-  my ($I, $key)=@_;
-  return $I->[PARENT]->id_index_lookup($key) ? 1 : undef;
-}
+  sub EXISTS {
+    my ($I, $key)=@_;
+    return $I->[PARENT]->id_index_lookup($key) ? 1 : undef;
+  }
 
-sub FIRSTKEY {
-  my ($I)=@_;
-  my @el=($I->[ITERATOR]=$I->[PARENT]->id_index_iterator)->();
-  return @el ? $el[0] : ();
+  sub FIRSTKEY {
+    my ($I)=@_;
+    my @el=($I->[ITERATOR]=$I->[PARENT]->id_index_iterator)->();
+    return @el ? $el[0] : ();
+  }
 }
 
 #######################################################################
 # Data Accessor
 #######################################################################
 
-package MMapDB::Data;
+{
+  package MMapDB::Data;
 
-use strict;
-use constant {
-  PARENT=>0,
-  POSLIST=>1,
-};
+  use strict;
+  use constant {
+    PARENT=>MMapDB::_base::PARENT,
+    POSLIST=>MMapDB::_base::POS,
+    DATAMODE=>MMapDB::_base::DATAMODE,
+    ITERATOR=>MMapDB::_base::ITERATOR,
+  };
 
-*TIEARRAY=\&MMapDB::_base::new;
-*STORE=\&MMapDB::_base::readonly;
-*STORESIZE=\&MMapDB::_base::readonly;
-*EXTEND=\&MMapDB::_base::readonly;
-*DELETE=\&MMapDB::_base::readonly;
-*CLEAR=\&MMapDB::_base::readonly;
-*PUSH=\&MMapDB::_base::readonly;
-*UNSHIFT=\&MMapDB::_base::readonly;
-*POP=\&MMapDB::_base::readonly;
-*SHIFT=\&MMapDB::_base::readonly;
-*SPLICE=\&MMapDB::_base::readonly;
+  {our @ISA=qw/MMapDB::_base/}
 
-sub FETCH {
-  my ($I, $idx)=@_;
-  return unless @{$I->[POSLIST]}>$idx;
-  return $I->[PARENT]->data_record($I->[POSLIST]->[$idx]);
+  sub FETCH {
+    my ($I, $idx)=@_;
+    return unless @{$I->[POSLIST]}>$idx;
+    if( $I->[DATAMODE]==MMapDB::DATAMODE_SIMPLE ) {
+      return $I->[PARENT]->data_value($I->[POSLIST]->[$idx]);
+    } else {
+      return $I->[PARENT]->data_record($I->[POSLIST]->[$idx]);
+    }
+  }
+
+  sub FETCHSIZE {scalar @{$_[0]->[POSLIST]}}
+
+  sub EXISTS {@{$_[0]->[POSLIST]}>$_[1]}
 }
-
-sub FETCHSIZE {scalar @{$_[0]->[POSLIST]}}
-
-sub EXISTS {@{$_[0]->[POSLIST]}>$_[1]}
 
 1;
 __END__
@@ -1169,6 +1241,9 @@ MMapDB - a simple database in shared memory
   use Data::Dumper;
   print Dumper($db->main_index); # dumps the whole database
 
+  tied(%{$db->main_index})->datamode=DATAMODE_SIMPLE;
+  print Dumper($db->main_index); # dumps only values
+
   # access by ID
   ($keys, $sort, $data, $id)=@{$db->id_index->{$id}};
 
@@ -1181,6 +1256,14 @@ MMapDB - a simple database in shared memory
     # found a data record
     for (@positions) {
       ($keys, $sort, $data, $id)=@{$db->data_record($_)};
+
+      or
+
+      $data=$db->data_value($_);
+
+      or
+
+      $sort=$db->data_sort($_);
     }
   } else {
     # not found
@@ -1774,7 +1857,8 @@ disappear in the future.
 =head2 @positions=$db-E<gt>index_lookup(INDEXPOS, KEY1, KEY2, ...)
 
 looks up the key C<[KEY1, KEY2, ...]> in the index given by its position
-C<INDEXPOS>. Returns a list of positions.
+C<INDEXPOS>. Returns a list of positions or an empty list if the complete
+key is not found.
 
 To check if the result is a data record array or another index use this code:
 
@@ -1787,6 +1871,69 @@ To check if the result is a data record array or another index use this code:
   } else {
     # not found
   }
+
+=head2 ($idxpos, $nth)=$db-E<gt>index_lookup_position(INDEXPOS, KEY1, ...)
+
+This method behaves similar to
+L<< index_lookup()|/@positions=$db->index_lookup(INDEXPOS, KEY1, KEY2, ...) >>
+in that it looks up a key. It differs in
+
+=over 4
+
+=item *
+
+It returns the position of the index containing the last key element
+and the position of the found element within that index. These 2 numbers
+can be used to create and position an
+L<< iterator|/$it=$db->id_index_iterator >>.
+
+=item *
+
+The last key element may not exist. In this case the value returned as C<$nth>
+points to the index element before which the key would appear.
+
+=item *
+
+If an intermediate key element does not exist or is not an index an empty
+list is returned.
+
+=back
+
+Consider the following database:
+
+ {
+   key => {
+            aa => ['1'],
+            ab => ['2'],
+            ad => ['3'],
+          }
+ }
+
+Now let's define an accessor function:
+
+ sub get {
+   my ($subkey)=@_;
+
+   $db->data_value
+     ((
+       $db->index_iterator
+         ($db->index_lookup_position($db->mainidx, "key", $subkey))->()
+      )[1])
+ }
+
+Then
+
+ get "aa";    # returns '1'
+ get "ab";    # returns '2'
+ get "ac";    # returns '3' although key "ac" does not exist it would
+              #             show up between "ab" and "ad". So, the iterator
+              #             is positioned on "ad"
+ get "aba";   # returns '3' for the same reason
+ get "ad";    # returns '3'
+
+ (undef, $nth)=$db->index_lookup_position($db->mainidx, "key", "az");
+ # now $nth is 3 because "az" would be inserted after "ad" which is at
+ # position 2 within the index.
 
 =head2 $position=$db-E<gt>id_index_lookup(ID)
 
@@ -1811,6 +1958,20 @@ with the following structure:
 
 All of the C<KEYs>, C<SORT> and C<DATA> are read-only strings.
 
+=head2 $data=$db-E<gt>data_value(POS)
+
+similar to L<data_record()|/$rec=$db-E<gt>data_record(POS)> but returns
+only the C<DATA> field of the record. Faster than
+L<data_record()|/$rec=$db-E<gt>data_record(POS)>.
+
+See L</The MMapDB::Data class> for an example.
+
+=head2 $sort=$db-E<gt>data_sort(POS)
+
+similar to L<data_record()|/$rec=$db-E<gt>data_record(POS)> but returns
+only the C<SORT> field of the record. Faster than
+L<data_record()|/$rec=$db-E<gt>data_record(POS)>.
+
 =head2 $it=$db-E<gt>iterator
 
 =head2 $it=$db-E<gt>iterator(1)
@@ -1827,9 +1988,9 @@ C<$it> is an L<MMapDB::Iterator|/"The C<MMapDB::Iterator> class"> object.
 Invoking any method on this iterator results in a C<E_NOT_IMPLEMENTED>
 exception.
 
-=head2 $it=$db-E<gt>index_iterator(POS)
+=head2 $it=$db-E<gt>index_iterator(POS, NTH)
 
-=head2 ($it, $nitems)=$db-E<gt>index_iterator(POS)
+=head2 ($it, $nitems)=$db-E<gt>index_iterator(POS, NTH)
 
 iterate over an index given by its position. The iterator returns
 a partial key and a position list:
@@ -1838,6 +1999,15 @@ a partial key and a position list:
 
 If called in array context the iterator and the number of items it will
 iterate is returned.
+
+The optional C<NTH> parameter initially positions the iterator within
+the index as L<< MMapDB::Iterator->nth|/$it->nth($n) >> does.
+
+C<index_iterator()> can be used in combination with
+L<< index_lookup_position()|/($idxpos, $nth)=$db->index_lookup_position(INDEXPOS, KEY1, ...) >>
+to create and position an iterator:
+
+ $it=$db->index_iterator($db->index_lookup_position($db->mainidx, qw/key .../));
 
 C<$it> is an L<MMapDB::Iterator|/"The C<MMapDB::Iterator> class"> object.
 
@@ -1897,6 +2067,14 @@ provided C<[KEY1, KEY2]> point to an array of data records.
 
 While it is easier to access the database this way it is also much slower.
 
+See also L</The MMapDB::Index and MMapDB::IDIndex classes>
+
+=head2 $db-E<gt>datamode=$mode or $mode=$db-E<gt>datamode
+
+Set/Get the datamode for C<< %{$db->main_index} >>.
+
+See also L</The MMapDB::Index and MMapDB::IDIndex classes>
+
 =head2 $hashref=$db-E<gt>id_index
 
 The same works for indices:
@@ -1906,6 +2084,84 @@ The same works for indices:
 returns almost the same as
 
   $db->data_record( $db->id_index_lookup(42) )
+
+See also L</The MMapDB::Index and MMapDB::IDIndex classes>
+
+=head2 $db-E<gt>id_datamode=$mode or $mode=$db-E<gt>id_datamode
+
+Set/Get the datamode for C<< %{$db->id_index} >>.
+
+See also L</The MMapDB::Index and MMapDB::IDIndex classes>
+
+=head1 The C<MMapDB::Index> and C<MMapDB::IDIndex> classes
+
+C<< $db->main_index >> and C<< $db->id_index >> elements are initialized
+when C<< $db->start >> is called. They simply point to empty anonymous hashes.
+These hashes are then tied to these classes.
+
+Now if a hash value is accessed the C<FETCH> function of the tied object
+checks whether the element points to another index (that means another hash)
+or to a list of data records.
+The C<< $db->id_index >> hash elements are always data records. So, there is
+nothing to decide here.
+
+If an index is found the reference of another anonymous hash is returned.
+This hash itself is again tied to a C<MMapDB::Index> object. If a
+list of data records is found the reference of an anonymous array is
+returned. The array itself is tied to  a C<MMapDB::Data> object.
+
+All 3 classes, C<MMapDB::Index>, C<MMapDB::IDIndex> and C<MMapDB::Data>
+have a property called C<datamode>. When a C<MMapDB::Index> object
+creates a new C<MMapDB::Index> or C<MMapDB::Data> object it passes
+its datamode on.
+
+The datamode itself is either C<DATAMODE_NORMAL> or C<DATAMODE_SIMPLE>.
+It affects only the behavior of a C<MMapDB::Data> object. But since it
+is passed on setting it for say C<< tied(%{$db->main_index}) >>
+affects all C<MMapDB::Data> leaves created afterwards.
+
+=head1 The C<MMapDB::Data> class
+
+When a list of data records is found by a C<MMapDB::Index> or
+C<MMapDB::IDIndex> object it is tied to an instance of C<MMapDB::Data>.
+
+The individual data records can be read in 2 modes C<DATAMODE_NORMAL>
+and C<DATAMODE_SIMPLE>. In normal mode the record is read with
+C<< $db->data_record >>, in simple mode with C<< $db->data_value >>.
+
+The following example shows the difference:
+
+Create a database with a few data items:
+
+ my $db=MMapDB->new("mmdb");
+ $db->start; $db->begin;
+ $db->insert([["k1", "k2"], "0", "data1"]);
+ $db->insert([["k1", "k2"], "1", "data2"]);
+ $db->insert([["k2"], "0", "data3"]);
+ $db->commit;
+
+Now, in C<DATAMODE_NORMAL> it looks like:
+
+ {
+   k1 => {
+	   k2 => [
+		   [['k1', 'k2'], '0', 'data1', 1],
+		   [['k1', 'k2'], '1', 'data2', 2],
+		 ],
+	 },
+   k2 => [
+	   [['k2'], '0', 'data3', 3],
+	 ],
+ }
+
+Now, we set C<< $db->datamode=DATAMODE_SIMPLE >> and it looks like:
+
+ {
+   k1 => {
+           k2 => ['data1', 'data2'],
+         },
+   k2 => ['data3'],
+ }
 
 =head1 The C<MMapDB::Iterator> class
 
@@ -1945,11 +2201,53 @@ counting upwards by C<1> for each element.
 
 returns the number of elements that the iterator will traverse.
 
+=head1 INHERITING FROM THIS MODULE
+
+An C<MMapDB> object is internally an array. If another module want to
+inherit from C<MMapDB> and needs to add other member data it can add
+elements to the array. C<@MMapDB::attributes> contains all attribute
+names that C<MMapDB> uses.
+
+To add to this list the following scheme is recommended:
+
+ package MMapDB::XX;
+ use MMapDB;
+ our @ISA=('MMapDB');
+ our @attributes;
+
+ # add attribute accessors
+ BEGIN {
+   @attributes=(@MMapDB::attributes, qw/attribute1 attribute2 .../);
+   for( my $i=@MMapDB::attributes; $i<@attributes; $i++ ) {
+     my $method_num=$i;
+     no strict 'refs';
+     *{__PACKAGE__.'::'.$attributes[$method_num]}=
+	sub : lvalue {$_[0]->[$method_num]};
+   }
+ }
+
+Now an C<MMapDB::XX> object can call C<< $obj->filename >> to get the
+C<MMapDB> filename attribute or C<< $obj->attribute1 >> to get its own
+C<attribute1>.
+
+If another module then wants to inherit from C<MMapDB::XX> it uses
+
+   @attributes=(@MMapDB::XX::attributes, qw/attribute1 attribute2 .../);
+   for( my $i=@MMapDB::XX::attributes; $i<@attributes; $i++ ) {
+     ...
+   }
+
+Multiple inheritance is really tricky this way.
+
 =head1 EXPORT
 
 None by default.
 
 Error constants are imported by the C<:error> tag.
+
+C<DATAMODE_SIMPLE> is imported by the C<:mode> tag.
+
+All constants are imported by the C<:all> tag.
 
 =head1 READ PERFORMANCE
 
@@ -2010,8 +2308,8 @@ To restore a database use this one:
 
  perl -MMMapDB -e 'MMapDB->new(filename=>shift)->restore' DATABASENAME
 
-See also L<backup()|/$db-E<gt>backup(filename=E<gt>BACKUPNAME)> and
-L<restore()|/$db-E<gt>restore(filename=E<gt>BACKUPNAME)>
+See also L<< backup()|/$db->backup(BACKUPNAME) >> and
+L<< restore()|/$db->restore(BACKUPNAME) >>
 
 =head1 DISK LAYOUT
 

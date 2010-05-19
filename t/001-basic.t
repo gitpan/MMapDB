@@ -3,15 +3,19 @@
 use strict;
 use Test::More;
 use Test::Exception;
-use MMapDB qw/:error/;
+use MMapDB qw/:all/;
 use Fcntl qw/:flock/;
 
 my @fmts=('', undef, qw/L N J/);
 eval {my $x=pack 'Q', 0; push @fmts, 'Q'};
 #my @fmts=('');
-plan tests=>132*@fmts;
+plan tests=>147*@fmts;
 #plan 'no_plan';
 #use Data::Dumper; $Data::Dumper::Useqq=1;
+
+sub note; *note=sub {
+  print '# '.join('', @_)."\n";
+} unless defined &note;
 
 sub doone {
   my ($fmt)=@_;
@@ -218,15 +222,53 @@ sub doone {
 	      (grep {$_->[1]==$el[0]} map {[$_, $positions{$_}]}
 	       keys %positions)[0]->[0]],
 	     'fetch 1st data record' );
+  is $d->data_value($el[0]), 'data1', 'fetch 1st data value';
+  is $d->data_sort($el[0]), 'sort1', 'fetch 1st sort value';
   is_deeply( $d->data_record($el[1]),
 	     [['key1'], 'sort2', 'data2',
 	      (grep {$_->[1]==$el[1]} map {[$_, $positions{$_}]}
 	       keys %positions)[0]->[0]],
 	     'fetch 2nd data record' );
+  is $d->data_value($el[1]), 'data2', 'fetch 2nd data value';
+  is $d->data_sort($el[1]), 'sort2', 'fetch 2nd sort value';
 
   @el=$d->index_lookup($d->mainidx, 'key2');
   is scalar @el, 1, 'key1: 1 positions';
   cmp_ok $el[0], '>=', $dataend, '0th pos >= dataend';
+
+  ##########################################################################
+  # test index_lookup_position
+  ##########################################################################
+
+  note "test index_lookup_position";
+
+  #use Data::Dumper; $Data::Dumper::Useqq=1;
+  #$d->datamode=DATAMODE_SIMPLE;
+  #note Dumper $d->main_index;
+
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key1')],
+    [$d->mainidx, 0], 'nth=0';
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key11')],
+    [$d->mainidx, 1], 'nth=1';
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key2')],
+    [$d->mainidx, 1], 'nth=1';
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key22')],
+    [$d->mainidx, 2], 'nth=2';
+
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key1', 'not found')],
+    [], 'not found';
+  is_deeply [$d->index_lookup_position($d->mainidx, 'not found', 'not found')],
+    [], 'not found';
+
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key2', 'key2')],
+    [($d->index_lookup($d->mainidx, 'key2'))[0], 0], 'key2 key2';
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key2', 'key21')],
+    [($d->index_lookup($d->mainidx, 'key2'))[0], 1], 'key2 key21';
+
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key2', 'key2', '...')],
+    [], 'key2 key2 not_found';
+  is_deeply [$d->index_lookup_position($d->mainidx, 'key2', 'key21', '...')],
+    [], 'key2 key21 not_found';
 
   ##########################################################################
   # test tie interface
@@ -286,7 +328,10 @@ sub doone {
   is scalar @{$r->main_index->{key1}}, 2, '2==@{$r->main_index->{key1}}';
 
   {
+    #use Data::Dumper; local $Data::Dumper::Useqq=1;
+    #warn Dumper $d->main_index;
     $d->backup;
+    #warn Dumper $d->main_index;
     ok -f('tmpdb.BACKUP'), 'tmpdb.BACKUP exists';
     my $backup=MMapDB->new(filename=>'tmpdb.BACKUP');
     isa_ok $backup, 'MMapDB', '$backup is a MMapDB';
@@ -384,6 +429,19 @@ sub doone {
 			 [["key1"], "sort9", "data4", $maxid_minus_1+1]]
 	     },
 	     '$r->main_index' );
+
+  tied(%{$r->main_index})->datamode=DATAMODE_SIMPLE;
+  is_deeply( $r->main_index,
+	     {
+	      "key1" => ["data3",
+			 "data2",
+			 "data5",
+			 "data6",
+			 "data8",
+			 "data7",
+			 "data4",],
+	     },
+	     '$r->main_index (DATAMODE_SIMPLE)' );
 }
 
 for my $fmt (@fmts) {

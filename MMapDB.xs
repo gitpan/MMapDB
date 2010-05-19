@@ -65,21 +65,36 @@ typedef AV* MMapDB;
 # define xSutf8(type, cnv, t, pos) \
     ((int)xSp(type, cnv, (t), (pos))[xSl(type, cnv, (t), (pos))])
 
+
+
+/********************************************************************/
+/********************************************************************/
+# undef DEBUG
+/********************************************************************/
+/********************************************************************/
+
+
+# ifdef DEBUG
+# define W warn
+# else
+# define W if(0) warn
+# endif
+
+
 INLINE int
 cmp(const void* p1, int p1len, const void* p2, int p2len) {
   int rc=memcmp(p1, p2, p1len<p2len?p1len:p2len);
+  W("    --> cmp('%*s', '%*s') => %d\n",
+    p1len, (char*)p1, p2len, (char*)p2, rc);
   return rc ? rc : p1len==p2len ? 0 : p1len<p2len ? -1 : 1;
 }
 
 INLINE int
 cmp1(const void* p1, int p1len, int p1utf8,
      const void* p2, int p2len, int p2utf8) {
-  if(0) {
-    warn("Comparing %.*s (is %sutf (%x)) and %.*s (is %sutf (%x))\n",
-         p1len, (char*)p1, (p1utf8?"":"not "), p1utf8,
-         p2len, (char*)p2, (p2utf8?"":"not "), p2utf8);
-  }
   int rc=memcmp(p1, p2, p1len<p2len?p1len:p2len);
+  W("    --> cmp('%*s' (%d), '%*s' (%d)) => %d\n",
+    p1len, (char*)p1, p1utf8, p2len, (char*)p2, p2utf8, rc);
   if( rc  ) return rc;
   if( p1len==p2len ) {
     if(!p1utf8 == !p2utf8) return 0;
@@ -113,33 +128,89 @@ cmp1(const void* p1, int p1len, int p1utf8,
     type rlen=xI(type, cnv, *idx++);					\
     type low=0, cur, curoff;						\
     int rel;								\
-    while( low<high ) {							\
-      cur=(high+low)/2;							\
-      curoff=xI(type, cnv, idx[rlen*cur]);				\
-      if( dbfmt==0 ) {							\
+    if( dbfmt==0 ) { 							\
+      while( low<high ) {						\
+	cur=(high+low)/2;						\
+	curoff=xI(type, cnv, idx[rlen*cur]);				\
         rel=cmp(xSp(type, cnv, strtbl, curoff),				\
 	        xSl(type, cnv, strtbl, curoff),				\
 	        k, klen);						\
-      } else {	   							\
+	if(rel<0) {							\
+	  low=cur+1;							\
+	} else if(rel>0) {						\
+	  high=cur;							\
+	} else {							\
+	  idx+=cur*rlen+1;	/* idx now points to the npos field */	\
+	  *isidx=(xI(type, cnv, idx[0])==1 &&				\
+		  xI(type, cnv, idx[1])>=dataend);			\
+	  *nextpos=xI(type, cnv, idx[1]);				\
+	  return (void*)(idx);						\
+	}								\
+      }									\
+    } else {	   							\
+      while( low<high ) {						\
+	cur=(high+low)/2;						\
+	W("  --> lch: %d, %d, %d\n", (int)low, (int)cur, (int)high);	\
+	curoff=xI(type, cnv, idx[rlen*cur]);				\
         rel=cmp1(xSp(type, cnv, strtbl, curoff),			\
 	         xSl(type, cnv, strtbl, curoff),			\
 	         xSutf8(type, cnv, strtbl, curoff),			\
 	         k, klen, kutf8);					\
-        if(0) warn("  --> rel=%d\n", rel);	    	  		\
-      }		   							\
-      if(rel<0) {							\
-	low=cur+1;							\
-      } else if(rel>0) {						\
-	high=cur;							\
-      } else {								\
-	idx+=cur*rlen+1;	/* idx now points to the npos field */	\
-	*isidx=(xI(type, cnv, idx[0])==1 &&				\
-		xI(type, cnv, idx[1])>=dataend);			\
-	*nextpos=xI(type, cnv, idx[1]);					\
-	return (void*)(idx);						\
+	if(rel<0) {							\
+	  low=cur+1;							\
+	} else if(rel>0) {						\
+	  high=cur;							\
+	} else {							\
+	  W("    --> BINGO");						\
+	  idx+=cur*rlen+1;	/* idx now points to the npos field */	\
+	  *isidx=(xI(type, cnv, idx[0])==1 &&				\
+		  xI(type, cnv, idx[1])>=dataend);			\
+	  *nextpos=xI(type, cnv, idx[1]);				\
+	  return (void*)(idx);						\
+	}								\
       }									\
-    }									\
+    } 	   								\
     return NULL;							\
+  }									\
+									\
+  static UV								\
+  idx_srchpos_##fmt(const char* k, int klen, int dbfmt, int kutf8,	\
+		    const void* kidx,					\
+		    const void* strtbl, UV dataend) {			\
+    const type* idx=kidx;						\
+    type high=xI(type, cnv, *idx++);					\
+    type rlen=xI(type, cnv, *idx++);					\
+    type low=0, cur, curoff;						\
+    int rel;								\
+    if( dbfmt==0 ) { 							\
+      while( low<high ) {						\
+	cur=(high+low)/2;						\
+	curoff=xI(type, cnv, idx[rlen*cur]);				\
+        rel=cmp(xSp(type, cnv, strtbl, curoff),				\
+	        xSl(type, cnv, strtbl, curoff),				\
+	        k, klen);						\
+	if(rel<0) {							\
+	  low=cur+1;							\
+	} else {						\
+	  high=cur;							\
+	}								\
+      }									\
+    } else {	   							\
+      while( low<high ) {						\
+	cur=(high+low)/2;						\
+	curoff=xI(type, cnv, idx[rlen*cur]);				\
+        rel=cmp1(xSp(type, cnv, strtbl, curoff),			\
+	         xSl(type, cnv, strtbl, curoff),			\
+	         xSutf8(type, cnv, strtbl, curoff),			\
+	         k, klen, kutf8);					\
+	if(rel<0) {							\
+	  low=cur+1;							\
+	} else {						\
+	  high=cur;							\
+	}								\
+      }									\
+    } 	   								\
+    return (UV)low;							\
   }									\
 									\
   static UV								\
@@ -214,6 +285,56 @@ cmp1(const void* p1, int p1len, int p1utf8,
     }									\
     av_push(res, newSVuv(id));						\
     return res;								\
+  }									\
+									\
+  static SV*								\
+  dval_##fmt(pTHX_ const void* _rec, int dbfmt, const void* _strtbl) {	\
+    const type* rec=_rec;						\
+    type stroff;							\
+    const char* strtbl=_strtbl;						\
+    SV *sv;								\
+									\
+    rec+=2;		/* skip valid flag and ID */			\
+    rec+=xI(type, cnv, *rec)+2;  /* skip NKEYS, KEYS and SORT */	\
+    		       		    	 	     	      		\
+    stroff=xI(type, cnv, *rec);	 					\
+    sv=newSV(0);							\
+    SvUPGRADE(sv, SVt_PV);						\
+    SvPOK_only(sv);							\
+    /* set the string itself */						\
+    SvPV_set(sv, xSp(type, cnv, strtbl, stroff)); 			\
+    SvLEN_set(sv, 0);							\
+    SvCUR_set(sv, xSl(type, cnv, strtbl, stroff));			\
+    SvREADONLY_on(sv);							\
+    if( dbfmt>0 ) {							\
+      if( xSutf8(type, cnv, strtbl, stroff) ) SvUTF8_on(sv);		\
+    }									\
+    return sv;								\
+  }									\
+									\
+  static SV*								\
+  dsort_##fmt(pTHX_ const void* _rec, int dbfmt, const void* _strtbl) {	\
+    const type* rec=_rec;						\
+    type stroff;							\
+    const char* strtbl=_strtbl;						\
+    SV *sv;								\
+									\
+    rec+=2;		/* skip valid flag and ID */			\
+    rec+=xI(type, cnv, *rec)+1;  /* skip NKEYS and KEYS */		\
+    		       		    	 	     	      		\
+    stroff=xI(type, cnv, *rec);	 					\
+    sv=newSV(0);							\
+    SvUPGRADE(sv, SVt_PV);						\
+    SvPOK_only(sv);							\
+    /* set the string itself */						\
+    SvPV_set(sv, xSp(type, cnv, strtbl, stroff)); 			\
+    SvLEN_set(sv, 0);							\
+    SvCUR_set(sv, xSl(type, cnv, strtbl, stroff));			\
+    SvREADONLY_on(sv);							\
+    if( dbfmt>0 ) {							\
+      if( xSutf8(type, cnv, strtbl, stroff) ) SvUTF8_on(sv);		\
+    }									\
+    return sv;								\
   }
 
 GENFN(U32,     L, identity)
@@ -228,19 +349,33 @@ typedef void* (*idx_lookup)(const char *k, int klen, int dbfmt, int kutf8,
 			    const void *strtbl, UV dataend,
 			    /* output params */
 			    int* isidx, UV* nextpos);
+typedef UV (*idx_srchpos)(const char *k, int klen, int dbfmt, int kutf8,
+			  const void *kidx,
+			  const void *strtbl, UV dataend);
 typedef void (*pushresult)(pTHX_ const void* _descr, SV** sp);
 typedef AV* (*drec)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
+typedef SV* (*dval)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
+typedef SV* (*dsort)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
 typedef UV (*ididx_lookup)(UV id, const void *kidx);
 
-# define USEFN(fmt) {idx_lookup_##fmt, pushresult_##fmt, ididx_lookup_##fmt, \
-      drec_##fmt}
+# define USEFN(fmt) {							\
+      idx_lookup_##fmt,							\
+      idx_srchpos_##fmt,						\
+      pushresult_##fmt,							\
+      ididx_lookup_##fmt,						\
+      drec_##fmt,							\
+      dval_##fmt,							\
+      dsort_##fmt}
 # define NULLFN {0,0,0,0}
 
 struct {
   idx_lookup idx;
+  idx_srchpos srch;
   pushresult pres;
   ididx_lookup ididx;
   drec drec;
+  dval dval;
+  dsort dsort;
 } lookup[]={
 # ifdef EBCDIC
   USEFN(L),
@@ -296,22 +431,70 @@ index_lookup(I, ...)
       dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
       dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
+      W("MainIdx=%d\n", (int)dataend);
+
       for(i=2; i<items && isidx; i++) {
 	keyp=SvPV(ST(i), keylen);
+
+	W("\nlooking for %*s\n", (int)keylen, (char*)keyp);
+
 	found=L(intfmt[0],idx)(keyp, keylen, dbfmt, SvUTF8(ST(i)), datap+pos,
 			       strtbl, dataend,
 			       &isidx, &pos);
+
+	W("  --> found %lx\n", (long)found);
+
 	if(!found) goto END;
       }
 
       if( expect_true(found && i==items) ) {
 	L(intfmt[0],pres)(aTHX_ found, sp);
-	/* pres() calls PUTPACK. So, we must return here */
+	/* pres() EXTENDs the stack and hence can reallocate it.
+	 * So it calls PUTPACK afterwards and we must return here
+	 * to avoid the implicit PUTBACK that XS inserts. */
 	return;
       }
-    END:
-      PUTBACK;
     }
+   END:
+
+void
+index_lookup_position(I, ...)
+    MMapDB I;
+  PPCODE:
+    if( expect_true(items>1) ) {
+      UV pos=SvUV(ST(1));
+      STRLEN keylen;
+      char *datap, *intfmt, *keyp;
+      SV **svp=av_fetch(I, MMDB_DATA, 0);
+      void *strtbl;
+      UV dataend, dbfmt;
+      int i, isidx=1;
+
+      if( expect_false(!(svp && SvROK(*svp))) ) goto END;
+      datap=SvPV_nolen(SvRV(*svp));
+
+      intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+      strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+      dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+      dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+
+      for(i=2; i<items-1 && isidx; i++) {
+	keyp=SvPV(ST(i), keylen);
+	if( !L(intfmt[0],idx)(keyp, keylen, dbfmt, SvUTF8(ST(i)), datap+pos,
+			      strtbl, dataend,
+			      &isidx, &pos) ) goto END;
+      }
+
+      if( expect_true(i==items-1 && isidx) ) {
+	keyp=SvPV(ST(i), keylen);
+	/* we return 2 items. Since we got at least 2 items on the
+	 * stack we don't need to extend it. */
+	mPUSHu(pos);
+	mPUSHu(L(intfmt[0],srch)(keyp, keylen, dbfmt, SvUTF8(ST(i)), datap+pos,
+				 strtbl, dataend));
+      }
+    }
+   END:
 
 void
 id_index_lookup(I, id)
@@ -323,17 +506,18 @@ id_index_lookup(I, id)
       UV pos;
       SV **svp=av_fetch(I, MMDB_DATA, 0);
 
-      if( expect_false(!(svp && SvROK(*svp))) ) return;
-      datap=SvPV_nolen(SvRV(*svp));
+      if( expect_true((svp && SvROK(*svp))) ) {
+	datap=SvPV_nolen(SvRV(*svp));
 
-      intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
-      pos=SvUV(*av_fetch(I, MMDB_IDIDX, 0));
+	intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+	pos=SvUV(*av_fetch(I, MMDB_IDIDX, 0));
 
-      pos=L(intfmt[0],ididx)(id, datap+pos);
+	pos=L(intfmt[0],ididx)(id, datap+pos);
 
-      if( pos!=(UV)-1 ) {
-	/* EXTEND(SP,1); # not necessary there is already room for 2 items */
-	PUSHs(sv_2mortal(newSVuv(pos)));
+	if( pos!=(UV)-1 ) {
+	  /* EXTEND(SP,1); # not necessary there is already room for 2 items */
+	  PUSHs(sv_2mortal(newSVuv(pos)));
+	}
       }
     }
 
@@ -348,17 +532,72 @@ data_record(I, ...)
       SV **svp=av_fetch(I, MMDB_DATA, 0);
       AV* av;
 
-      if( expect_false(!(svp && SvROK(*svp))) ) return;
-      datap=SvPV_nolen(SvRV(*svp));
+      if( expect_true((svp && SvROK(*svp))) ) {
+	datap=SvPV_nolen(SvRV(*svp));
 
-      dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
-      dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+	dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+	dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
-      if( expect_true(pos<dataend) ) {
-	intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
-	stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+	if( expect_true(pos<dataend) ) {
+	  intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+	  stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
 
-	av=L(intfmt[0],drec)(aTHX_ datap+pos, dbfmt, datap+stroff);
-	PUSHs(sv_2mortal(newRV_noinc((SV*)av)));
+	  av=L(intfmt[0],drec)(aTHX_ datap+pos, dbfmt, datap+stroff);
+	  PUSHs(sv_2mortal(newRV_noinc((SV*)av)));
+	}
+      }
+    }
+
+void
+data_value(I, ...)
+    MMapDB I;
+  PPCODE:
+    if( items>1 ) {
+      UV pos=SvUV(ST(1));
+      char *datap, *intfmt;
+      UV dataend, stroff, dbfmt;
+      SV **svp=av_fetch(I, MMDB_DATA, 0);
+      SV* rsv;
+
+      if( expect_true((svp && SvROK(*svp))) ) {
+	datap=SvPV_nolen(SvRV(*svp));
+
+	dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+	dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+
+	if( expect_true(pos<dataend) ) {
+	  intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+	  stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+
+	  rsv=L(intfmt[0],dval)(aTHX_ datap+pos, dbfmt, datap+stroff);
+	  PUSHs(sv_2mortal(rsv));
+	}
+      }
+    }
+
+void
+data_sort(I, ...)
+    MMapDB I;
+  PPCODE:
+    if( items>1 ) {
+      UV pos=SvUV(ST(1));
+      char *datap, *intfmt;
+      UV dataend, stroff, dbfmt;
+      SV **svp=av_fetch(I, MMDB_DATA, 0);
+      SV* rsv;
+
+      if( expect_true((svp && SvROK(*svp))) ) {
+	datap=SvPV_nolen(SvRV(*svp));
+
+	dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+	dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+
+	if( expect_true(pos<dataend) ) {
+	  intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+	  stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+
+	  rsv=L(intfmt[0],dsort)(aTHX_ datap+pos, dbfmt, datap+stroff);
+	  PUSHs(sv_2mortal(rsv));
+	}
       }
     }

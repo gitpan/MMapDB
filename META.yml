@@ -1,22 +1,14 @@
 --- #YAML:1.0
-name:               MMapDB
-version:            0.08
-abstract:           a simple database in shared memory
-author:
+name:                MMapDB
+version:             0.10
+abstract:            a simple database in shared memory
+license:             ~
+author:              
     - Torsten Foertsch <torsten.foertsch@gmx.net>
-license:            unknown
-distribution_type:  module
-configure_requires:
-    ExtUtils::MakeMaker:  0
-build_requires:
-    ExtUtils::MakeMaker:  0
-requires:
-    File::Map:  0.16
-no_index:
-    directory:
-        - t
-        - inc
-generated_by:       ExtUtils::MakeMaker version 6.56
+generated_by:        ExtUtils::MakeMaker version 6.42
+distribution_type:   module
+requires:     
+    File::Map:                     0.16
 meta-spec:
-    url:      http://module-build.sourceforge.net/META-spec-v1.4.html
-    version:  1.4
+    url:     http://module-build.sourceforge.net/META-spec-v1.3.html
+    version: 1.3

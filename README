@@ -39,6 +39,9 @@ SYNOPSIS
       use Data::Dumper;
       print Dumper($db->main_index); # dumps the whole database
 
+      tied(%{$db->main_index})->datamode=DATAMODE_SIMPLE;
+      print Dumper($db->main_index); # dumps only values
+
       # access by ID
       ($keys, $sort, $data, $id)=@{$db->id_index->{$id}};
 
@@ -51,6 +54,14 @@ SYNOPSIS
         # found a data record
         for (@positions) {
           ($keys, $sort, $data, $id)=@{$db->data_record($_)};
+
+          or
+
+          $data=$db->data_value($_);
+
+          or
+
+          $sort=$db->data_sort($_);
         }
       } else {
         # not found
@@ -598,7 +609,8 @@ METHODS
 
   @positions=$db->index_lookup(INDEXPOS, KEY1, KEY2, ...)
     looks up the key "[KEY1, KEY2, ...]" in the index given by its position
-    "INDEXPOS". Returns a list of positions.
+    "INDEXPOS". Returns a list of positions or an empty list if the complete
+    key is not found.
 
     To check if the result is a data record array or another index use this
     code:
@@ -612,6 +624,57 @@ METHODS
       } else {
         # not found
       }
+
+  ($idxpos, $nth)=$db->index_lookup_position(INDEXPOS, KEY1, ...)
+    This method behaves similar to index_lookup() in that it looks up a key.
+    It differs in
+
+    *   It returns the position of the index containing the last key element
+        and the position of the found element within that index. These 2
+        numbers can be used to create and position an iterator.
+
+    *   The last key element may not exist. In this case the value returned
+        as $nth points to the index element before which the key would
+        appear.
+
+    *   If an intermediate key element does not exist or is not an index an
+        empty list is returned.
+
+    Consider the following database:
+
+     {
+       key => {
+                aa => ['1'],
+                ab => ['2'],
+                ad => ['3'],
+              }
+     }
+
+    Now let's define an accessor function:
+
+     sub get {
+       my ($subkey)=@_;
+
+       $db->data_value
+         ((
+           $db->index_iterator
+             ($db->index_lookup_position($db->mainidx, "key", $subkey))->()
+          )[1])
+     }
+
+    Then
+
+     get "aa";    # returns '1'
+     get "ab";    # returns '2'
+     get "ac";    # returns '3' although key "ac" does not exist it would
+                  #             show up between "ab" and "ad". So, the iterator
+                  #             is positioned on "ad"
+     get "aba";   # returns '3' for the same reason
+     get "ad";    # returns '3'
+
+     (undef, $nth)=$db->index_lookup_position($db->mainidx, "key", "az");
+     # now $nth is 3 because "az" would be inserted after "ad" which is at
+     # position 2 within the index.
 
   $position=$db->id_index_lookup(ID)
     looks up a data record by its ID. Returns the data record's position.
@@ -633,6 +696,16 @@ METHODS
 
     All of the "KEYs", "SORT" and "DATA" are read-only strings.
 
+  $data=$db->data_value(POS)
+    similar to data_record() but returns only the "DATA" field of the
+    record. Faster than data_record().
+
+    See "The MMapDB::Data class" for an example.
+
+  $sort=$db->data_sort(POS)
+    similar to data_record() but returns only the "SORT" field of the
+    record. Faster than data_record().
+
   $it=$db->iterator
   $it=$db->iterator(1)
     perhaps you want to iterate over all data records in a database. The
@@ -646,8 +719,8 @@ METHODS
     $it is an MMapDB::Iterator object. Invoking any method on this iterator
     results in a "E_NOT_IMPLEMENTED" exception.
 
-  $it=$db->index_iterator(POS)
-  ($it, $nitems)=$db->index_iterator(POS)
+  $it=$db->index_iterator(POS, NTH)
+  ($it, $nitems)=$db->index_iterator(POS, NTH)
     iterate over an index given by its position. The iterator returns a
     partial key and a position list:
 
@@ -655,6 +728,14 @@ METHODS
 
     If called in array context the iterator and the number of items it will
     iterate is returned.
+
+    The optional "NTH" parameter initially positions the iterator within the
+    index as MMapDB::Iterator->nth does.
+
+    "index_iterator()" can be used in combination with
+    index_lookup_position() to create and position an iterator:
+
+     $it=$db->index_iterator($db->index_lookup_position($db->mainidx, qw/key .../));
 
     $it is an MMapDB::Iterator object.
 
@@ -706,6 +787,13 @@ METHODS
     While it is easier to access the database this way it is also much
     slower.
 
+    See also "The MMapDB::Index and MMapDB::IDIndex classes"
+
+  $db->datamode=$mode or $mode=$db->datamode
+    Set/Get the datamode for "%{$db->main_index}".
+
+    See also "The MMapDB::Index and MMapDB::IDIndex classes"
+
   $hashref=$db->id_index
     The same works for indices:
 
@@ -714,6 +802,80 @@ METHODS
     returns almost the same as
 
       $db->data_record( $db->id_index_lookup(42) )
+
+    See also "The MMapDB::Index and MMapDB::IDIndex classes"
+
+  $db->id_datamode=$mode or $mode=$db->id_datamode
+    Set/Get the datamode for "%{$db->id_index}".
+
+    See also "The MMapDB::Index and MMapDB::IDIndex classes"
+
+The "MMapDB::Index" and "MMapDB::IDIndex" classes
+    "$db->main_index" and "$db->id_index" elements are initialized when
+    "$db->start" is called. They simply point to empty anonymous hashes.
+    These hashes are then tied to these classes.
+
+    Now if a hash value is accessed the "FETCH" function of the tied object
+    checks whether the element points to another index (that means another
+    hash) or to a list of data records. The "$db->id_index" hash elements
+    are always data records. So, there is nothing to decide here.
+
+    If an index is found the reference of another anonymous hash is
+    returned. This hash itself is again tied to a "MMapDB::Index" object. If
+    a list of data records is found the reference of an anonymous array is
+    returned. The array itself is tied to a "MMapDB::Data" object.
+
+    All 3 classes, "MMapDB::Index", "MMapDB::IDIndex" and "MMapDB::Data"
+    have a property called "datamode". When a "MMapDB::Index" object creates
+    a new "MMapDB::Index" or "MMapDB::Data" object it passes its datamode
+    on.
+
+    The datamode itself is either "DATAMODE_NORMAL" or "DATAMODE_SIMPLE". It
+    affects only the behavior of a "MMapDB::Data" object. But since it is
+    passed on setting it for say "tied(%{$db->main_index})" affects all
+    "MMapDB::Data" leaves created afterwards.
+
+The "MMapDB::Data" class
+    When a list of data records is found by a "MMapDB::Index" or
+    "MMapDB::IDIndex" object it is tied to an instance of "MMapDB::Data".
+
+    The individual data records can be read in 2 modes "DATAMODE_NORMAL" and
+    "DATAMODE_SIMPLE". In normal mode the record is read with
+    "$db->data_record", in simple mode with "$db->data_value".
+
+    The following example shows the difference:
+
+    Create a database with a few data items:
+
+     my $db=MMapDB->new("mmdb");
+     $db->start; $db->begin;
+     $db->insert([["k1", "k2"], "0", "data1"]);
+     $db->insert([["k1", "k2"], "1", "data2"]);
+     $db->insert([["k2"], "0", "data3"]);
+     $db->commit;
+
+    Now, in "DATAMODE_NORMAL" it looks like:
+
+     {
+       k1 => {
+               k2 => [
+                       [['k1', 'k2'], '0', 'data1', 1],
+                       [['k1', 'k2'], '1', 'data2', 2],
+                     ],
+             },
+       k2 => [
+               [['k2'], '0', 'data3', 3],
+             ],
+     }
+
+    Now, we set "$db->datamode=DATAMODE_SIMPLE" and it looks like:
+
+     {
+       k1 => {
+               k2 => ['data1', 'data2'],
+             },
+       k2 => ['data3'],
+     }
 
 The "MMapDB::Iterator" class
     To this class belong all iterators documented here. An iterator is
@@ -748,10 +910,50 @@ The "MMapDB::Iterator" class
   $it->nelem
     returns the number of elements that the iterator will traverse.
 
+INHERITING FROM THIS MODULE
+    An "MMapDB" object is internally an array. If another module want to
+    inherit from "MMapDB" and needs to add other member data it can add
+    elements to the array. @MMapDB::attributes contains all attribute names
+    that "MMapDB" uses.
+
+    To add to this list the following scheme is recommended:
+
+     package MMapDB::XX;
+     use MMapDB;
+     our @ISA=('MMapDB');
+     our @attributes;
+
+     # add attribute accessors
+     BEGIN {
+       @attributes=(@MMapDB::attributes, qw/attribute1 attribute2 .../);
+       for( my $i=@MMapDB::attributes; $i<@attributes; $i++ ) {
+         my $method_num=$i;
+         no strict 'refs';
+         *{__PACKAGE__.'::'.$attributes[$method_num]}=
+            sub : lvalue {$_[0]->[$method_num]};
+       }
+     }
+
+    Now an "MMapDB::XX" object can call "$obj->filename" to get the "MMapDB"
+    filename attribute or "$obj->attribute1" to get its own "attribute1".
+
+    If another module then wants to inherit from "MMapDB::XX" it uses
+
+       @attributes=(@MMapDB::XX::attributes, qw/attribute1 attribute2 .../);
+       for( my $i=@MMapDB::XX::attributes; $i<@attributes; $i++ ) {
+         ...
+       }
+
+    Multiple inheritance is really tricky this way.
+
 EXPORT
     None by default.
 
     Error constants are imported by the ":error" tag.
+
+    "DATAMODE_SIMPLE" is imported by the ":mode" tag.
+
+    All constants are imported by the ":all" tag.
 
 READ PERFORMANCE
     The "t/002-benchmark.t" test as the name suggests is mainly about
@@ -912,9 +1114,9 @@ DISK LAYOUT
      +----------------------------------+
      | NKEYS (S bytes)                  |
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ KEY POSITIONS (NKEYS * S bytes)  Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ KEY POSITIONS (NKEYS * S bytes)  ¦
+     ¦                                  ¦
      +----------------------------------+
      | SORT POSITION                    |
      +----------------------------------+
@@ -948,9 +1150,9 @@ DISK LAYOUT
      +----------------------------------+
      | RECORDLEN (S bytes)              |  in units of integers
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ constant length records          Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ constant length records          ¦
+     ¦                                  ¦
      +----------------------------------+
 
     The record length is a property of the index itself. It is the length of
@@ -964,13 +1166,13 @@ DISK LAYOUT
      +----------------------------------+
      | NPOS (S bytes)                   |
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ POSITION LIST (NPOS * S bytes)   Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ POSITION LIST (NPOS * S bytes)   ¦
+     ¦                                  ¦
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ padding up to RECORDLEN          Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ padding up to RECORDLEN          ¦
+     ¦                                  ¦
      +----------------------------------+
 
     The "KEY POSITION" contains the offset of the record's partial key from
@@ -991,13 +1193,13 @@ DISK LAYOUT
      +----------------------------------+
      | LENGTH (S bytes)                 |
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ OCTETS (LENGTH bytes)            Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ OCTETS (LENGTH bytes)            ¦
+     ¦                                  ¦
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ padding                          Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ padding                          ¦
+     ¦                                  ¦
      +----------------------------------+
 
    Database Format 1
@@ -1007,22 +1209,22 @@ DISK LAYOUT
      +----------------------------------+
      | LENGTH (S bytes)                 |
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ OCTETS (LENGTH bytes)            Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ OCTETS (LENGTH bytes)            ¦
+     ¦                                  ¦
      +----------------------------------+
-     Â¦ UTF8 INDICATOR (1 byte)          Â¦
+     ¦ UTF8 INDICATOR (1 byte)          ¦
      +----------------------------------+
-     Â¦                                  Â¦
-     Â¦ padding                          Â¦
-     Â¦                                  Â¦
+     ¦                                  ¦
+     ¦ padding                          ¦
+     ¦                                  ¦
      +----------------------------------+
 
 AUTHOR
-    Torsten FÃ¶rtsch, <torsten.foertsch@gmx.net>
+    Torsten Förtsch, <torsten.foertsch@gmx.net>
 
 COPYRIGHT AND LICENSE
-    Copyright (C) 2009-2010 by Torsten FÃ¶rtsch
+    Copyright (C) 2009-2010 by Torsten Förtsch
 
     This library is free software; you can redistribute it and/or modify it
     under the same terms as Perl itself, either Perl version 5.10.0 or, at

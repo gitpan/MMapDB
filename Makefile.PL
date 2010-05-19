@@ -20,6 +20,7 @@ WriteMakefile
    INC            => '-I.', # e.g., '-I. -I/usr/include/other'
    # Un-comment this if you add C files to link with later:
    # OBJECT       => '$(O_FILES)', # link all the C files too
+   EXE_FILES      => [qw!bin/MMDB-backup bin/MMDB-restore!],
 );
 
 sub MY::postamble {

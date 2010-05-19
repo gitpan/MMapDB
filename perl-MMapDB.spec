@@ -1,3 +1,5 @@
+%define perl_vendorbin %(perl -MConfig -e 'print $Config{vendorbin}')
+
 Name:         perl-MMapDB
 License:      Artistic License
 Group:        Development/Libraries/Perl
@@ -5,8 +7,8 @@ Requires:     perl = %{perl_version} perl-File-Map
 BuildRequires: perl = %{perl_version} perl-File-Map
 Autoreqprov:  on
 Summary:      MMapDB
-Version:      0.08
-Release:      2
+Version:      0.10
+Release:      1
 Source:       MMapDB-%{version}.tar.gz
 BuildRoot:    %{_tmppath}/%{name}-%{version}-build
 
@@ -41,6 +43,7 @@ find $RPM_BUILD_ROOT%{_mandir}/man* -type f -print0 |
 %files
 %defattr(-, root, root)
 %{perl_vendorarch}
+%{perl_vendorbin}
 %doc %{_mandir}/man3
 /var/adm/perl-modules/perl-MMapDB
 %doc MANIFEST
