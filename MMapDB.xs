@@ -24,26 +24,25 @@ typedef AV* MMapDB;
 # define MMDB_READONLY       1
 # define MMDB_INTFMT         2
 # define MMDB_DATA           3
-# define MMDB_RWDATA         4
-# define MMDB_INTSIZE        5
-# define MMDB_STRINGFMT      6
-# define MMDB_STRINGTBL      7
-# define MMDB_MAINIDX        8
-# define MMDB_IDIDX          9
-# define MMDB_MAIN_INDEX    10
-# define MMDB_ID_INDEX      11
-# define MMDB_NEXTID        12
-# define MMDB_IDMAP         13
-# define MMDB_TMPFH         14
-# define MMDB_TMPNAME       15
-# define MMDB_STRINGFH      16
-# define MMDB_STRINGMAP     17
-# define MMDB_STRPOS        18
-# define MMDB_LOCKFILE      19
-# define MMDB_FLAGS         20	/* 1 Byte, not used by now */
-# define MMDB_DBFORMAT_IN   21
-# define MMDB_DBFORMAT_OUT  22
-# define MMDB_STRINGFMT_OUT 23
+# define MMDB_INTSIZE        4
+# define MMDB_STRINGFMT      5
+# define MMDB_STRINGTBL      6
+# define MMDB_MAINIDX        7
+# define MMDB_IDIDX          8
+# define MMDB_MAIN_INDEX     9
+# define MMDB_ID_INDEX      10
+# define MMDB_NEXTID        11
+# define MMDB_IDMAP         12
+# define MMDB_TMPFH         13
+# define MMDB_TMPNAME       14
+# define MMDB_STRINGFH      15
+# define MMDB_STRINGMAP     16
+# define MMDB_STRPOS        17
+# define MMDB_LOCKFILE      18
+# define MMDB_FLAGS         19	/* 1 Byte, not used by now */
+# define MMDB_DBFORMAT_IN   20
+# define MMDB_DBFORMAT_OUT  21
+# define MMDB_STRINGFMT_OUT 22
 
 # define identity(v) (v)
 

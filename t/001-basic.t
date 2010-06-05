@@ -328,10 +328,7 @@ sub doone {
   is scalar @{$r->main_index->{key1}}, 2, '2==@{$r->main_index->{key1}}';
 
   {
-    #use Data::Dumper; local $Data::Dumper::Useqq=1;
-    #warn Dumper $d->main_index;
     $d->backup;
-    #warn Dumper $d->main_index;
     ok -f('tmpdb.BACKUP'), 'tmpdb.BACKUP exists';
     my $backup=MMapDB->new(filename=>'tmpdb.BACKUP');
     isa_ok $backup, 'MMapDB', '$backup is a MMapDB';

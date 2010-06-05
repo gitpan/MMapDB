@@ -12,12 +12,12 @@ use integer;
 
 use Fcntl qw/:seek :flock/;
 use File::Spec;
-use File::Map qw/map_handle/;
+use File::Map qw/map_handle protect/;
 use Exporter qw/import/;
 use Encode ();
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.10';
+  our $VERSION = '0.11';
   our %EXPORT_TAGS=
     (
      mode =>[qw/DATAMODE_NORMAL DATAMODE_SIMPLE/],
@@ -37,7 +37,7 @@ use Encode ();
   BEGIN {
     # define attributes and implement accessor methods
     # !! keep in sync with MMapDB.xs !!
-    @attributes=(qw/filename readonly intfmt _data _rwdata _intsize _stringfmt
+    @attributes=(qw/filename readonly intfmt _data _intsize _stringfmt
 		    _stringtbl mainidx _ididx main_index id_index
 		    _nextid _idmap _tmpfh _tmpname _stringfh _stringmap
 		    _strpos lockfile flags dbformat_in dbformat_out
@@ -153,7 +153,6 @@ sub new {
     $I->flags=0;
     $I->dbformat_in=$#dbformats; # use the newest by default
     $I->dbformat_out=$#dbformats; # use the newest by default
-    $I->_rwdata=do {my $dummy=' '; \$dummy};
   }
 
   if( @param==1 ) {
@@ -188,19 +187,22 @@ sub start {
   my $retry=5;
   RETRY: {
       return unless $retry--;
-      if( $I->_data ) {
-	$I->stop unless( substr( ${$I->_data}, INTFMT, 1 ) eq $I->intfmt );
-      }
+      $I->stop if (defined $I->_data and
+		   substr( ${$I->_data}, INTFMT, 1 ) ne $I->intfmt);
 
       unless( $I->_data ) {
-	my ($dummy, $rwdummy, $fmt);
-	open my $fh, ($I->readonly ? '<' : '+<'), $I->filename or return;
+	my ($dummy, $fmt);
+	my $fh;
+	if( $I->readonly ) {
+	  open $fh, '<', $I->filename or return;
+	} else {
+	  open $fh, '+<', $I->filename or return;
+	}
 
 	# Map the main data always read-only. If we are in writable mode
 	# map only the header page again writable.
 	eval {
 	  map_handle $dummy, $fh, '<';
-	  map_handle $rwdummy, $fh, '+<', INTFMT, 1 unless $I->readonly;
 	};
 	close $fh;
 	return if $@;		# perhaps throw something here
@@ -223,7 +225,6 @@ sub start {
 	$I->flags=unpack 'x5C', $dummy;
 
 	$I->_data=\$dummy;		# now mapped
-	$I->_rwdata=\$rwdummy;
 
 	# read main index position
 	$I->mainidx=unpack('x'.(BASEOFFSET+MAINIDX*$I->_intsize).$I->intfmt,
@@ -249,10 +250,9 @@ sub stop {
 
   return $I unless defined $I->_data;
 
-  for my $k (qw/_data _rwdata _stringtbl mainidx _ididx/) {
+  for my $k (qw/_data _stringtbl mainidx _ididx/) {
     undef $I->$k;
   }
-  $I->_rwdata=do {my $dummy=' '; \$dummy};
 
   untie %{$I->main_index}; undef $I->main_index;
   untie %{$I->id_index};   undef $I->id_index;
@@ -621,7 +621,11 @@ sub _write_id_index {
 
 sub invalidate {
   my ($I)=@_;
-  substr( ${$I->_rwdata}, 0, 1 )="\0"; # invalidate current map
+  $I->_e(E_READONLY) if $I->readonly;
+  return unless defined $I->_data;
+  protect ${$I->_data}, '+<';
+  substr( ${$I->_data}, INTFMT, 1, "\0" );
+  protect ${$I->_data}, '<';
 }
 
 sub commit {

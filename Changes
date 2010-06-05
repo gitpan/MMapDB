@@ -1,5 +1,10 @@
 Revision history for Perl extension MMapDB.
 
+0.11  Sat Jun  5 16:37:48 CEST 2010
+      - removed _rwdata, since File::Map provides protect() now (since 0.21)
+      - avoid lvalue substr() in invalidate since this prevents the
+        file map to be destroyed in time.
+
 0.10  Fri May 14 13:58:13 CEST 2010
       - make references to the MMapDB object from MMapDB::_base objects
         (tied interface) weak.

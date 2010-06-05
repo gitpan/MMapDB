@@ -7,7 +7,7 @@ WriteMakefile
    NAME           => 'MMapDB',
    VERSION_FROM   => 'lib/MMapDB.pm', # finds $VERSION
    PREREQ_PM      => {
-		      'File::Map' => 0.16,
+		      'File::Map' => 0.21,
 		     }, # e.g., Module::Name => 1.1
    ABSTRACT_FROM  => 'lib/MMapDB.pm', # retrieve abstract from module
    AUTHOR         => 'Torsten Foertsch <torsten.foertsch@gmx.net>',
