@@ -9,6 +9,7 @@ t/001-basic.t
 t/002-benchmark.t
 t/003-utf8.t
 t/004-inherit.t
+t/005-utf8-mixed.t
 t/pod-coverage.t
 t/pod.t
 lib/MMapDB.pm

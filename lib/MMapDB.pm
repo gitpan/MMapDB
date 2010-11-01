@@ -17,7 +17,7 @@ use Exporter qw/import/;
 use Encode ();
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.11';
+  our $VERSION = '0.12';
   our %EXPORT_TAGS=
     (
      mode =>[qw/DATAMODE_NORMAL DATAMODE_SIMPLE/],
@@ -1648,6 +1648,17 @@ without the flag) equal the strings themselves differ.
 
 With C<MMapDB>, if something is stored under an UTF8 key it can be retrieved
 also only by the UTF8 key.
+
+There is a subtle point here, what if the UTF8 flag is set for a string
+consisting of ASCII-only characters? In Perl th following expression is true:
+
+ 'hello' eq Encode::decode_utf8('hello')
+
+The first C<hello> is a string the the UTF8 flag unset. It is compared with
+the same sequence of octets with the UTF8 flag set.
+
+C<MMapDB> up to version 0.11 (including) considered those 2 strings different.
+That bug has been fixed in version 0.12.
 
 =head2 The database format
 

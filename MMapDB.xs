@@ -97,8 +97,13 @@ cmp1(const void* p1, int p1len, int p1utf8,
   if( rc  ) return rc;
   if( p1len==p2len ) {
     if(!p1utf8 == !p2utf8) return 0;
-    if( p2utf8 ) return -1;
-    return 1;
+    /* check for fake utf8 strings that means strings that have the flag set */
+    /* but consist completely of ascii */
+    char* fake=p1utf8 ? (char*)p1 : (char*)p2;
+    while( p1len-- ) {
+      if( *fake++ & 0x80 ) return p2utf8 ? -1 : 1;
+    }
+    return 0;
   }
   return p1len<p2len ? -1 : 1;
 }
@@ -600,3 +605,7 @@ data_sort(I, ...)
 	}
       }
     }
+
+## Local Variables:
+## mode: C
+## End:

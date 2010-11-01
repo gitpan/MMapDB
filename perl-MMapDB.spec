@@ -7,7 +7,7 @@ Requires:     perl = %{perl_version} perl-File-Map
 BuildRequires: perl = %{perl_version} perl-File-Map
 Autoreqprov:  on
 Summary:      MMapDB
-Version:      0.10
+Version:      0.12
 Release:      1
 Source:       MMapDB-%{version}.tar.gz
 BuildRoot:    %{_tmppath}/%{name}-%{version}-build

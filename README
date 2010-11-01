@@ -431,6 +431,18 @@ CONCEPTS
     With "MMapDB", if something is stored under an UTF8 key it can be
     retrieved also only by the UTF8 key.
 
+    There is a subtle point here, what if the UTF8 flag is set for a string
+    consisting of ASCII-only characters? In Perl th following expression is
+    true:
+
+     'hello' eq Encode::decode_utf8('hello')
+
+    The first "hello" is a string the the UTF8 flag unset. It is compared
+    with the same sequence of octets with the UTF8 flag set.
+
+    "MMapDB" up to version 0.11 (including) considered those 2 strings
+    different. That bug has been fixed in version 0.12.
+
   The database format
     With version 0.07 UTF8 support was introduced into "MMapDB". This
     required a slight change of the database on-disk format. Now the
@@ -1114,9 +1126,9 @@ DISK LAYOUT
      +----------------------------------+
      | NKEYS (S bytes)                  |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ KEY POSITIONS (NKEYS * S bytes)  ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ KEY POSITIONS (NKEYS * S bytes)  Â¦
+     Â¦                                  Â¦
      +----------------------------------+
      | SORT POSITION                    |
      +----------------------------------+
@@ -1150,9 +1162,9 @@ DISK LAYOUT
      +----------------------------------+
      | RECORDLEN (S bytes)              |  in units of integers
      +----------------------------------+
-     ¦                                  ¦
-     ¦ constant length records          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ constant length records          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
     The record length is a property of the index itself. It is the length of
@@ -1166,13 +1178,13 @@ DISK LAYOUT
      +----------------------------------+
      | NPOS (S bytes)                   |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ POSITION LIST (NPOS * S bytes)   ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ POSITION LIST (NPOS * S bytes)   Â¦
+     Â¦                                  Â¦
      +----------------------------------+
-     ¦                                  ¦
-     ¦ padding up to RECORDLEN          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ padding up to RECORDLEN          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
     The "KEY POSITION" contains the offset of the record's partial key from
@@ -1193,13 +1205,13 @@ DISK LAYOUT
      +----------------------------------+
      | LENGTH (S bytes)                 |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ OCTETS (LENGTH bytes)            ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ OCTETS (LENGTH bytes)            Â¦
+     Â¦                                  Â¦
      +----------------------------------+
-     ¦                                  ¦
-     ¦ padding                          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ padding                          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
    Database Format 1
@@ -1209,22 +1221,22 @@ DISK LAYOUT
      +----------------------------------+
      | LENGTH (S bytes)                 |
      +----------------------------------+
-     ¦                                  ¦
-     ¦ OCTETS (LENGTH bytes)            ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ OCTETS (LENGTH bytes)            Â¦
+     Â¦                                  Â¦
      +----------------------------------+
-     ¦ UTF8 INDICATOR (1 byte)          ¦
+     Â¦ UTF8 INDICATOR (1 byte)          Â¦
      +----------------------------------+
-     ¦                                  ¦
-     ¦ padding                          ¦
-     ¦                                  ¦
+     Â¦                                  Â¦
+     Â¦ padding                          Â¦
+     Â¦                                  Â¦
      +----------------------------------+
 
 AUTHOR
-    Torsten Förtsch, <torsten.foertsch@gmx.net>
+    Torsten FÃ¶rtsch, <torsten.foertsch@gmx.net>
 
 COPYRIGHT AND LICENSE
-    Copyright (C) 2009-2010 by Torsten Förtsch
+    Copyright (C) 2009-2010 by Torsten FÃ¶rtsch
 
     This library is free software; you can redistribute it and/or modify it
     under the same terms as Perl itself, either Perl version 5.10.0 or, at
