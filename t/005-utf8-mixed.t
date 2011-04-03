@@ -14,8 +14,8 @@ sub note; *note=sub {
   print '# '.join('', @_)."\n";
 } unless defined &note;
 
-#plan tests=>102;
-plan 'no_plan';
+plan tests=>6;
+#plan 'no_plan';
 use Data::Dumper; $Data::Dumper::Useqq=1;
 
 unlink 'tmpdb';			# make sure

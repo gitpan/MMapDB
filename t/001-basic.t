@@ -9,7 +9,7 @@ use Fcntl qw/:flock/;
 my @fmts=('', undef, qw/L N J/);
 eval {my $x=pack 'Q', 0; push @fmts, 'Q'};
 #my @fmts=('');
-plan tests=>147*@fmts;
+plan tests=>159*@fmts;
 #plan 'no_plan';
 #use Data::Dumper; $Data::Dumper::Useqq=1;
 
@@ -212,7 +212,7 @@ sub doone {
     is scalar @l, 0, 'key3: not found';
   }
 
-  my @el=$d->index_lookup($d->mainidx, 'key1');
+  my @el=$d->index_lookup(0, 'key1');
   is scalar @el, 2, 'key1: 2 positions';
   cmp_ok $el[0], '<', $dataend, '0th pos < dataend';
   cmp_ok $el[1], '<', $dataend, '1st pos < dataend';
@@ -231,6 +231,46 @@ sub doone {
 	     'fetch 2nd data record' );
   is $d->data_value($el[1]), 'data2', 'fetch 2nd data value';
   is $d->data_sort($el[1]), 'sort2', 'fetch 2nd sort value';
+
+  is_deeply( [$d->data_record(@el)],
+	     [
+	      [['key1'], 'sort1', 'data1',
+	       (grep {$_->[1]==$el[0]} map {[$_, $positions{$_}]}
+		keys %positions)[0]->[0]],
+	      [['key1'], 'sort2', 'data2',
+	       (grep {$_->[1]==$el[1]} map {[$_, $positions{$_}]}
+		keys %positions)[0]->[0]],
+	     ], 'data_record( @POS )' );
+  is_deeply( [$d->data_value(@el)], [qw/data1 data2/], 'data_value( @POS )' );
+  is_deeply( [$d->data_sort(@el)], [qw/sort1 sort2/], 'data_sort( @POS )' );
+
+  is_deeply( [$d->index_lookup_records(0, 'key1')],
+	     [
+	      [['key1'], 'sort1', 'data1',
+	       (grep {$_->[1]==$el[0]} map {[$_, $positions{$_}]}
+		keys %positions)[0]->[0]],
+	      [['key1'], 'sort2', 'data2',
+	       (grep {$_->[1]==$el[1]} map {[$_, $positions{$_}]}
+		keys %positions)[0]->[0]],
+	     ], 'index_lookup_records' );
+  is_deeply( [$d->index_lookup_records(0, 'non-existent')], [],
+	     'index_lookup_records (non-existent)');
+  is_deeply( [$d->index_lookup_records(0, 'key2')], [],
+	     'index_lookup_records (index)');
+
+  is_deeply( [$d->index_lookup_values(0, 'key1')], [qw/data1 data2/],
+	     'index_lookup_values' );
+  is_deeply( [$d->index_lookup_values(0, 'non-existent')], [],
+	     'index_lookup_values (non-existent)');
+  is_deeply( [$d->index_lookup_values(0, 'key2')], [],
+	     'index_lookup_values (index)');
+
+  is_deeply( [$d->index_lookup_sorts(0, 'key1')], [qw/sort1 sort2/],
+	     'index_lookup_sorts' );
+  is_deeply( [$d->index_lookup_sorts(0, 'non-existent')], [],
+	     'index_lookup_sorts (non-existent)');
+  is_deeply( [$d->index_lookup_sorts(0, 'key2')], [],
+	     'index_lookup_sorts (index)');
 
   @el=$d->index_lookup($d->mainidx, 'key2');
   is scalar @el, 1, 'key1: 1 positions';

@@ -17,7 +17,7 @@ use Exporter qw/import/;
 use Encode ();
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.12';
+  our $VERSION = '0.14';
   our %EXPORT_TAGS=
     (
      mode =>[qw/DATAMODE_NORMAL DATAMODE_SIMPLE/],
@@ -41,7 +41,8 @@ use Encode ();
 		    _stringtbl mainidx _ididx main_index id_index
 		    _nextid _idmap _tmpfh _tmpname _stringfh _stringmap
 		    _strpos lockfile flags dbformat_in dbformat_out
-		    _stringfmt_out
+		    _stringfmt_out stringmap_prealloc _stringmap_end
+		    index_prealloc _index_end _tmpmap
 		   /);
     for( my $i=0; $i<@attributes; $i++ ) {
       my $method_num=$i;
@@ -104,6 +105,26 @@ BEGIN {
 #  warn Dumper @_;
 #}
 
+sub _putdata {
+  my ($I, $pos, $fmt, @param)=@_;
+
+  my $pstr=pack $fmt, @param;
+  my $map=$I->_tmpmap;
+  if( $pos+length($pstr)>length $$map ) {
+    my $prea=$I->index_prealloc;
+    my $need=$prea*(($pos+length($pstr)+$prea-1)/$prea);
+    eval {
+      my $fh=$I->_tmpfh;
+      sysseek $fh, $need, SEEK_SET and
+	truncate $fh, $need and
+	  map_handle $$map, $fh, '+>', 0, $need;
+    };
+    $I->_e(E_OPEN) if $@;
+  }
+  substr $$map, $pos, length($pstr), $pstr;
+  return length($pstr);
+}
+
 sub set_intfmt {
   my ($I, $fmt)=@_;
 
@@ -154,6 +175,8 @@ sub new {
     $I->dbformat_in=$#dbformats; # use the newest by default
     $I->dbformat_out=$#dbformats; # use the newest by default
   }
+  $I->stringmap_prealloc=1024*1024*10; # 10MB
+  $I->index_prealloc=1024*1024*10; # 10MB
 
   if( @param==1 ) {
     $I->filename=$param[0];
@@ -389,24 +412,31 @@ sub begin {
   }
   $I->set_intfmt($I->intfmt);	# adjust string format
 
-  {
-    # open tmpfile
-    open my $fh, '+>', $I->_tmpname=$I->filename.'.'.$$ or die E_OPEN;
-    $I->_tmpfh=$fh;		# this starts the transaction
-
-    # if a specific db format is defined use it.
-    syswrite $fh, pack('a4aC', $dbformats[$I->dbformat_out],
-		       $I->intfmt, $I->flags & 0xff)
-      or $I->_e(E_WRITE);
-    sysseek $fh, BASEOFFSET+DATASTART*$I->_intsize, SEEK_SET or $I->_e(E_SEEK);
-    truncate $fh, BASEOFFSET+DATASTART*$I->_intsize or $I->_e(E_TRUNCATE);;
-  }
+  $I->_tmpname=$I->filename.'.'.$$;
 
   {
     # open stringtbl tmpfile
     open my $fh, '+>', $I->_tmpname.'.strings' or die E_OPEN;
     $I->_stringfh=$fh;
-    $I->_stringmap=\(my $dummy='');
+    $I->_stringmap=\my $strings;
+    eval {
+      sysseek $fh, $I->stringmap_prealloc, SEEK_SET and
+	truncate $fh, $I->stringmap_prealloc and
+	  map_handle $strings, $fh, '+>', 0, $I->stringmap_prealloc;
+    };
+    die E_OPEN if $@;
+    $I->_stringmap_end=0;
+  }
+
+  {
+    # open tmpfile
+    open my $fh, '+>', $I->_tmpname or die E_OPEN;
+    $I->_tmpfh=$fh;		# this starts the transaction
+    $I->_tmpmap=\do{my $map=''};
+
+    $I->_putdata(0, 'a4aC', $dbformats[$I->dbformat_out], $I->intfmt,
+		$I->flags & 0xff);
+    $I->_index_end=BASEOFFSET+DATASTART*$I->_intsize;
   }
 
   # and copy every *valid* entry from the old file
@@ -431,7 +461,7 @@ sub begin {
 sub _fiterator {
   my ($I, $end)=@_;
 
-  my $fh=$I->_tmpfh;
+  my $map=$I->_tmpmap;
   my $pos=BASEOFFSET+$I->_intsize*DATASTART;
 
   return sub {
@@ -439,21 +469,16 @@ sub _fiterator {
       return if $pos>=$end;
       my $elpos=$pos;
 
-      sysseek $fh, $pos, SEEK_SET or $I->_e(E_SEEK);
-
-      my $buf;
       # valid id nkeys key1...keyn sort data
       # read (valid, id, nkeys)
-      my $len=3*$I->_intsize;
-      sysread($fh, $buf, $len)==$len or $I->_e(E_READ);
-      my ($valid, $id, $nkeys)=unpack $I->intfmt.'3', $buf;
+      my ($valid, $id, $nkeys)=unpack 'x'.$pos.$I->intfmt.'3', $$map;
 
+      # move iterator position
+      # 5: valid, id, nkeys ... sort, data
       $pos+=$I->_intsize*(5+$nkeys);
       redo LOOP unless ($valid);
 
-      $len=($nkeys+2)*$I->_intsize; # keys + sort + data
-      sysread($fh, $buf, $len)==$len or $I->_e(E_READ);
-      my @l=unpack $I->intfmt.'*', $buf;
+      my @l=unpack 'x'.($elpos+3*$I->_intsize).$I->intfmt.($nkeys+2), $$map;
       my $data=pop @l;
       my $sort=pop @l;
 
@@ -465,7 +490,6 @@ sub _fiterator {
 sub _really_write_index {
   my ($I, $map, $level)=@_;
 
-  my $fh=$I->_tmpfh;
   my $recordlen=1;		# in ints: (1): for subindexes there is one
                                 #          position to store
 
@@ -487,10 +511,10 @@ sub _really_write_index {
   # of index records that belong to the index.
   my $indexsize=(2+$recordlen*keys(%$map))*$I->_intsize; # in bytes
 
-  my $pos=sysseek $fh, 0, SEEK_CUR or $I->_e(E_SEEK);
+  my $pos=$I->_index_end;
 
   # make room
-  sysseek $fh, $indexsize, SEEK_CUR or $I->_e(E_SEEK);
+  $I->_index_end=$pos+$indexsize;
 
   # and write subindices after this index
   my $strings=$I->_stringmap;
@@ -520,18 +544,9 @@ sub _really_write_index {
     }
   }
 
-  # now write the index
-  sysseek $fh, $pos, SEEK_SET or $I->_e(E_SEEK);
-
   my $fmt=$I->intfmt;
-
-  # write header
-  #my $prefix='--'x$level;
-  #warn sprintf "$prefix> pos: %#x, size: %#x\n", $pos, $indexsize;
-  #warn "$prefix> idx hdr: ".unpack('H*', pack($fmt.'2',
-  #					      0+keys(%$map), $recordlen))."\n";
-
-  syswrite $fh, pack($fmt.'2', 0+keys(%$map), $recordlen) or $I->_e(E_WRITE);
+  my $written=$pos;
+  $written+=$I->_putdata($written, $fmt.'2', 0+keys(%$map), $recordlen);
 
   $fmt.=$recordlen;
   # write the records
@@ -553,13 +568,8 @@ sub _really_write_index {
     #D($key, $v);
     #warn "$prefix> idx rec: ".unpack('H*', pack($fmt, $key, 0+@$v, @$v))."\n";
 
-    syswrite $fh, pack($fmt, $key, 0+@$v, @$v) or $I->_e(E_WRITE);
+    $written+=$I->_putdata($written, $fmt, $key, 0+@$v, @$v);
   }
-
-  # and seek back to EOF
-  sysseek $fh, 0, SEEK_END or $I->_e(E_SEEK);
-
-  #warn sprintf "$prefix> index written @ %#x\n", $pos;
 
   return $pos;
 }
@@ -567,9 +577,8 @@ sub _really_write_index {
 sub _write_index {
   my ($I)=@_;
 
-  my $dataend=sysseek $I->_tmpfh, 0, SEEK_CUR or $I->_e(E_SEEK);
   my %map;
-  for( my $it=$I->_fiterator($dataend); my ($el, $pos)=$it->(); ) {
+  for( my $it=$I->_fiterator($I->_index_end); my ($el, $pos)=$it->(); ) {
     my $m=\%map;
     my @k=@{$el->[0]};
     while(@k>1 and ref($m) eq 'HASH') {
@@ -595,14 +604,10 @@ sub _write_id_index {
 
   my $map=$I->_idmap;
   my $fmt=$I->intfmt;
-  my $fh=$I->_tmpfh;
 
-  my $pos=sysseek $fh, 0, SEEK_CUR or $I->_e(E_SEEK);
-
-  # write header
-  #warn "id> idx hdr: ".unpack('H*', pack($fmt, 0+keys(%$map)))."\n";
-
-  syswrite $fh, pack($fmt, 0+keys(%$map)) or $I->_e(E_WRITE);
+  my $pos=$I->_index_end;
+  my $written=$pos;
+  $written+=$I->_putdata($written, $fmt, 0+keys(%$map));
 
   $fmt.='2';
   # write the records
@@ -611,8 +616,9 @@ sub _write_id_index {
 
     #warn "id> idx rec: ".unpack('H*', pack($fmt, $key, $v))."\n";
 
-    syswrite $fh, pack($fmt, $key, $v) or $I->_e(E_WRITE);
+    $written+=$I->_putdata($written, $fmt, $key, $v);
   }
+  $I->_index_end=$written;
 
   #warn sprintf "id> index written @ %#x\n", $pos;
 
@@ -632,32 +638,34 @@ sub commit {
   my ($I, $dont_invalidate)=@_;
 
   $I->_ct;
-  my $fh=$I->_tmpfh;
 
   # write NEXTID
-  sysseek $fh, BASEOFFSET+NEXTID*$I->_intsize, SEEK_SET or $I->_e(E_SEEK);
-  syswrite $fh, pack($I->intfmt, $I->_nextid) or $I->_e(E_WRITE);
-  # and move back to where we came from
-  sysseek $fh, 0, SEEK_END or $I->_e(E_SEEK);
+  $I->_putdata(BASEOFFSET+NEXTID*$I->_intsize, $I->intfmt, $I->_nextid);
 
   # write MAINIDX and IDIDX
   my $mainidx=$I->_write_index;
   my $ididx=$I->_write_id_index;
 
-  sysseek $fh, BASEOFFSET+MAINIDX*$I->_intsize, SEEK_SET or $I->_e(E_SEEK);
-  syswrite $fh, pack($I->intfmt, $mainidx) or $I->_e(E_WRITE);
-  sysseek $fh, BASEOFFSET+IDIDX*$I->_intsize, SEEK_SET or $I->_e(E_SEEK);
-  syswrite $fh, pack($I->intfmt, $ididx) or $I->_e(E_WRITE);
+  $I->_putdata(BASEOFFSET+MAINIDX*$I->_intsize,   $I->intfmt, $mainidx);
+  $I->_putdata(BASEOFFSET+IDIDX*$I->_intsize,     $I->intfmt, $ididx);
+  $I->_putdata(BASEOFFSET+STRINGTBL*$I->_intsize, $I->intfmt, $I->_index_end);
 
-  # write string table
-  my $strtbl=sysseek $fh, 0, SEEK_END or $I->_e(E_SEEK);
-  {
-    my $strings=$I->_stringmap;
-    syswrite $fh, $$strings or $I->_e(E_WRITE) if length $$strings;
+  # now copy the string table
+  my $fh=$I->_tmpfh;
+  my $strings=$I->_stringmap;
+  my $map=$I->_tmpmap;
+  my $need=$I->_index_end+$I->_stringmap_end;
+  if( $need>length $$map ) {
+    eval {
+      sysseek $fh, $need, SEEK_SET and
+	truncate $fh, $need and
+	  map_handle $$map, $fh, '+>', 0, $need;
+    };
+    $I->_e(E_OPEN) if $@;
   }
-
-  sysseek $fh, BASEOFFSET+STRINGTBL*$I->_intsize, SEEK_SET or $I->_e(E_SEEK);
-  syswrite $fh, pack($I->intfmt, $strtbl) or $I->_e(E_WRITE);
+  substr($$map, $I->_index_end, $I->_stringmap_end,
+	 substr($$strings, 0, $I->_stringmap_end));
+  truncate $fh, $need;
 
   #warn "mainidx=$mainidx, ididx=$ididx, strtbl=$strtbl\n";
 
@@ -669,6 +677,7 @@ sub commit {
   undef $I->_stringfh;
   unlink $I->_tmpname.'.strings';
 
+  undef $I->_tmpmap;
   close $fh or $I->_e(E_CLOSE);
   undef $I->_tmpfh;
 
@@ -796,28 +805,36 @@ sub _string2pos {
     }
   }
   #warn "  --> NOT FOUND\n";
-  my $fh=$I->_stringfh;
-  my $pos=sysseek $fh, 0, SEEK_CUR or $I->_e(E_SEEK);
-  splice @$poslist, $low, 0, $pos+0;
+  my $pos=$I->_stringmap_end;
+  splice @$poslist, $low, 0, $pos;
   #warn "  --> inserting $pos into poslist at $low ==> @$poslist\n";
+
+  my $newstr;
   if( $dbfmt>DBFMT0 ) {
     if( Encode::is_utf8($key) ) {
-      syswrite $fh, pack($fmt, Encode::encode_utf8($key), 1)
-	or $I->_e(E_WRITE);
+      $newstr=pack($fmt, Encode::encode_utf8($key), 1);
     } else {
-      syswrite $fh, pack($fmt, $key, 0) or $I->_e(E_WRITE);
+      $newstr=pack($fmt, $key, 0);
     }
   } else {
-    syswrite $fh, pack($fmt, $key) or $I->_e(E_WRITE);
+    $newstr=pack($fmt, $key);
   }
 
-  # XXX: optimize the remapping
+  if( $pos+length($newstr)>length $$strings ) {
+    # remap
+    my $prea=$I->stringmap_prealloc;
+    my $need=$prea*(($pos+length($newstr)+$prea-1)/$prea);
+    eval {
+      my $fh=$I->_stringfh;
+      sysseek $fh, $need, SEEK_SET and
+	truncate $fh, $need and
+	  map_handle $$strings, $fh, '+>', 0, $need;
+    };
+    $I->_e(E_OPEN) if $@;
+  }
 
-  # remap $I->_stringmap
-  undef $I->_stringmap;
-  undef $strings;
-  eval {map_handle $strings, $I->_stringfh, '<'}; $I->_e(E_OPEN) if $@;
-  $I->_stringmap=\$strings;
+  substr $$strings, $pos, length($newstr), $newstr;
+  $I->_stringmap_end=$pos+length($newstr);
 
   return $pos;
 }
@@ -854,13 +871,10 @@ sub insert {
     $I->_nextid=$nid;
   }
 
-  my $fh=$I->_tmpfh;
-
-  my $pos=sysseek $fh, 0, SEEK_CUR or $I->_e(E_SEEK);
-  # valid id nkeys key1...keyn sort data
-  syswrite $fh, pack($I->intfmt.'*', 1, $id, 0+@{$rec->[0]},
-		     map {$I->_string2pos($_)} @{$rec->[0]}, @{$rec}[1,2])
-    or $I->_e(E_WRITE);
+  my $pos=$I->_index_end;
+  $I->_index_end+=$I->_putdata($pos, $I->intfmt.'*', 1, $id, 0+@{$rec->[0]},
+			      map {$I->_string2pos($_)}
+			      @{$rec->[0]}, @{$rec}[1,2]);
 
   $idmap->{$id}=$pos;
 
@@ -875,30 +889,20 @@ sub delete_by_id {
   # no such id
   return unless exists $I->_idmap->{$id};
 
-  my $fh=$I->_tmpfh;
+  my $map=$I->_tmpmap;
   my $idmap=$I->_idmap;
   my $pos;
 
-  return unless exists $idmap->{$id};
+  return unless defined($pos=delete $idmap->{$id});
 
-  $pos=delete $idmap->{$id};
-
-  sysseek $fh, $pos, SEEK_SET or $I->_e(E_SEEK);
-
-  my $buf;
   # read VALID, ID, NKEYS
-  my $len=3*$I->_intsize;
-  sysread($fh, $buf, $len)==$len or $I->_e(E_READ);
-  my ($valid, $elid, $nkeys)=unpack $I->intfmt.'3', $buf;
+  my ($valid, $elid, $nkeys)=unpack 'x'.$pos.$I->intfmt.'3', $$map;
 
   return unless $valid;
   return unless $id==$elid; # XXX: should'nt that be an E_CORRUPT
 
   my $rc=1;
   if( $return_element ) {
-    $len=($nkeys+2)*$I->_intsize; # keys + sort + data
-    sysread($fh, $buf, $len)==$len or $I->_e(E_READ);
-
     my $strings=$I->_stringmap;
     my $sfmt=$I->_stringfmt_out;
     my $dbfmt=$I->dbformat_out;
@@ -910,7 +914,7 @@ sub delete_by_id {
       } else {
 	unpack('x'.$_.$sfmt, $$strings);
       }
-    } unpack($I->intfmt.($nkeys+2), $buf);
+    } unpack('x'.($pos+3*$I->_intsize).$I->intfmt.($nkeys+2), $$map);
 
     my $rdata=pop @l;
     my $rsort=pop @l;
@@ -918,9 +922,7 @@ sub delete_by_id {
     $rc=[\@l, $rsort, $rdata, $id];
   }
 
-  sysseek $fh, $pos, SEEK_SET or $I->_e(E_SEEK);
-  syswrite $fh, pack($I->intfmt, 0) or $I->_e(E_WRITE);
-  sysseek $fh, 0, SEEK_END or $I->_e(E_SEEK);
+  $I->_putdata($pos, $I->intfmt, 0); # invalidate the record
 
   return $rc;
 }
@@ -930,14 +932,8 @@ sub clear {
 
   $I->_ct;
 
-  my $fh=$I->_tmpfh;
-  sysseek $fh, BASEOFFSET+DATASTART*$I->_intsize, SEEK_SET or $I->_e(E_SEEK);
-  truncate $fh, BASEOFFSET+DATASTART*$I->_intsize or $I->_e(E_TRUNCATE);;
-
-  $fh=$I->_stringfh;
-  sysseek $fh, 0, SEEK_SET or $I->_e(E_SEEK);
-  truncate $fh, 0 or $I->_e(E_TRUNCATE);;
-  $I->_stringmap=\(my $dummy='');
+  $I->_index_end=BASEOFFSET+DATASTART*$I->_intsize;
+  $I->_stringmap_end=0;
 
   $I->_idmap={};
   $I->_strpos=[];
@@ -1790,6 +1786,27 @@ C<MMDC> format is written.
 
 If C<-1> is given always the newest format is written.
 
+=head2 $db-E<gt>index_prealloc
+
+=head2 $db-E<gt>stringmap_prealloc
+
+When a transaction is begun 2 temporary files are created, one for the
+index and data records the other for the string table. These files are
+then mapped into the process' address space for faster access.
+
+C<index_prealloc> and C<stringmap_prealloc> define the initial sizes of
+these files. The files are created as sparse files. The actual space is
+allocated on demand. By default both these values are set to C<10*1024*1024>
+which is ten megabytes.
+
+When the space in one of the areas becomes unsufficient it is extented and
+remapped in chunks of C<index_prealloc> and C<stringmap_prealloc> respectively.
+
+You should change the default values only for really big databases:
+
+ $db->index_prealloc=100*1024*1024;
+ $db->stringmap_prealloc=100*1024*1024;
+
 =head2 $success=$db-E<gt>commit
 
 =head2 $success=$db-E<gt>commit(1)
@@ -1875,6 +1892,8 @@ looks up the key C<[KEY1, KEY2, ...]> in the index given by its position
 C<INDEXPOS>. Returns a list of positions or an empty list if the complete
 key is not found.
 
+If C<INDEXPOS> is C<0> or C<undef> C<< $db->mainidx >> is used.
+
 To check if the result is a data record array or another index use this code:
 
   if( @positions==1 and $positions[0] >= $db->mainidx ) {
@@ -1950,6 +1969,8 @@ Then
  # now $nth is 3 because "az" would be inserted after "ad" which is at
  # position 2 within the index.
 
+If C<INDEXPOS> is C<0> or C<undef> C<< $db->mainidx >> is used.
+
 =head2 $position=$db-E<gt>id_index_lookup(ID)
 
 looks up a data record by its ID. Returns the data record's position.
@@ -1964,28 +1985,46 @@ This method is simply a shortcut for
 
 A true result does not mean it is safe to use C<$pos> in C<data_record()>.
 
-=head2 $rec=$db-E<gt>data_record(POS)
+=head2 @recs=$db-E<gt>data_record(POS, ...)
 
-given a position fetches a data record. C<$res> is an array reference
-with the following structure:
+given a list of positions fetches the data records. Each C<@recs> element is
+an array reference with the following structure:
 
   [[KEY1, KEY2, ...], SORT, DATA, ID]
 
 All of the C<KEYs>, C<SORT> and C<DATA> are read-only strings.
 
-=head2 $data=$db-E<gt>data_value(POS)
+=head2 @values=$db-E<gt>data_value(POS, ...)
 
-similar to L<data_record()|/$rec=$db-E<gt>data_record(POS)> but returns
-only the C<DATA> field of the record. Faster than
-L<data_record()|/$rec=$db-E<gt>data_record(POS)>.
+similar to L<data_record()|/@recs=$db-E<gt>data_record(POS, ...)> but returns
+only the C<DATA> fields of the records. Faster than
+L<data_record()|/@recs=$db-E<gt>data_record(POS, ...)>.
 
 See L</The MMapDB::Data class> for an example.
 
-=head2 $sort=$db-E<gt>data_sort(POS)
+=head2 @sorts=$db-E<gt>data_sort(POS, ...)
 
-similar to L<data_record()|/$rec=$db-E<gt>data_record(POS)> but returns
-only the C<SORT> field of the record. Faster than
-L<data_record()|/$rec=$db-E<gt>data_record(POS)>.
+similar to L<data_record()|/@recs=$db-E<gt>data_record(POS, ...)> but returns
+only the C<SORT> fields of the records. Faster than
+L<data_record()|/@recs=$db-E<gt>data_record(POS, ...)>.
+
+=head2 @records=$db-E<gt>index_lookup_records(INDEXPOS, KEY1, KEY2, ...)
+
+a more effective shortcut of
+
+ @records=$db->data_record($db->index_lookup((INDEXPOS, KEY1, KEY2, ...)))
+
+=head2 @values=$db-E<gt>index_lookup_values(INDEXPOS, KEY1, KEY2, ...)
+
+a more effective shortcut of
+
+ @records=$db->data_value($db->index_lookup((INDEXPOS, KEY1, KEY2, ...)))
+
+=head2 @sorts=$db-E<gt>index_lookup_sorts(INDEXPOS, KEY1, KEY2, ...)
+
+a more effective shortcut of
+
+ @records=$db->data_sort($db->index_lookup((INDEXPOS, KEY1, KEY2, ...)))
 
 =head2 $it=$db-E<gt>iterator
 

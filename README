@@ -550,6 +550,26 @@ METHODS
 
     If -1 is given always the newest format is written.
 
+  $db->index_prealloc
+  $db->stringmap_prealloc
+    When a transaction is begun 2 temporary files are created, one for the
+    index and data records the other for the string table. These files are
+    then mapped into the process' address space for faster access.
+
+    "index_prealloc" and "stringmap_prealloc" define the initial sizes of
+    these files. The files are created as sparse files. The actual space is
+    allocated on demand. By default both these values are set to
+    "10*1024*1024" which is ten megabytes.
+
+    When the space in one of the areas becomes unsufficient it is extented
+    and remapped in chunks of "index_prealloc" and "stringmap_prealloc"
+    respectively.
+
+    You should change the default values only for really big databases:
+
+     $db->index_prealloc=100*1024*1024;
+     $db->stringmap_prealloc=100*1024*1024;
+
   $success=$db->commit
   $success=$db->commit(1)
     commits a transaction and reconnects to the new version.
@@ -624,6 +644,8 @@ METHODS
     "INDEXPOS". Returns a list of positions or an empty list if the complete
     key is not found.
 
+    If "INDEXPOS" is 0 or "undef" "$db->mainidx" is used.
+
     To check if the result is a data record array or another index use this
     code:
 
@@ -688,6 +710,8 @@ METHODS
      # now $nth is 3 because "az" would be inserted after "ad" which is at
      # position 2 within the index.
 
+    If "INDEXPOS" is 0 or "undef" "$db->mainidx" is used.
+
   $position=$db->id_index_lookup(ID)
     looks up a data record by its ID. Returns the data record's position.
 
@@ -700,23 +724,38 @@ METHODS
 
     A true result does not mean it is safe to use $pos in "data_record()".
 
-  $rec=$db->data_record(POS)
-    given a position fetches a data record. $res is an array reference with
-    the following structure:
+  @recs=$db->data_record(POS, ...)
+    given a list of positions fetches the data records. Each @recs element
+    is an array reference with the following structure:
 
       [[KEY1, KEY2, ...], SORT, DATA, ID]
 
     All of the "KEYs", "SORT" and "DATA" are read-only strings.
 
-  $data=$db->data_value(POS)
-    similar to data_record() but returns only the "DATA" field of the
-    record. Faster than data_record().
+  @values=$db->data_value(POS, ...)
+    similar to data_record() but returns only the "DATA" fields of the
+    records. Faster than data_record().
 
     See "The MMapDB::Data class" for an example.
 
-  $sort=$db->data_sort(POS)
-    similar to data_record() but returns only the "SORT" field of the
-    record. Faster than data_record().
+  @sorts=$db->data_sort(POS, ...)
+    similar to data_record() but returns only the "SORT" fields of the
+    records. Faster than data_record().
+
+  @records=$db->index_lookup_records(INDEXPOS, KEY1, KEY2, ...)
+    a more effective shortcut of
+
+     @records=$db->data_record($db->index_lookup((INDEXPOS, KEY1, KEY2, ...)))
+
+  @values=$db->index_lookup_values(INDEXPOS, KEY1, KEY2, ...)
+    a more effective shortcut of
+
+     @records=$db->data_value($db->index_lookup((INDEXPOS, KEY1, KEY2, ...)))
+
+  @sorts=$db->index_lookup_sorts(INDEXPOS, KEY1, KEY2, ...)
+    a more effective shortcut of
+
+     @records=$db->data_sort($db->index_lookup((INDEXPOS, KEY1, KEY2, ...)))
 
   $it=$db->iterator
   $it=$db->iterator(1)

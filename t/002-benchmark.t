@@ -17,7 +17,7 @@ my %check;
 my @ins;
 my ($k1, $k2);
 
-my $benchcount=-2;
+my $benchcount=-3;
 
 {
   my %h;

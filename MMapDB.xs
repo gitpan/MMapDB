@@ -79,6 +79,121 @@ typedef AV* MMapDB;
 # define W if(0) warn
 # endif
 
+# define DECLFN(type, fmt, cnv)						\
+  static void								\
+  pushresult_##fmt(pTHX_ const void* _descr, SV** sp);			\
+  static void								\
+  pushrecords_##fmt(pTHX_ const void* _descr, int dbfmt,		\
+		    const char* datap, UV dataend,			\
+		    const void* _strtbl, SV** sp);			\
+  static void								\
+  pushvalues_##fmt(pTHX_ const void* _descr, int dbfmt,			\
+		   const char* datap, UV dataend,			\
+		   const void* _strtbl, SV** sp);			\
+  static void								\
+  pushsorts_##fmt(pTHX_ const void* _descr, int dbfmt,			\
+		  const char* datap, UV dataend,			\
+		  const void* _strtbl, SV** sp);			\
+  static void*								\
+  idx_lookup_##fmt(const char* k, int klen, int dbfmt, int kutf8,	\
+                   const void* kidx,					\
+		   const void* strtbl, UV dataend,			\
+		   /* output */ int *isidx, UV* nextpos);		\
+  static UV								\
+  idx_srchpos_##fmt(const char* k, int klen, int dbfmt, int kutf8,	\
+		    const void* kidx,					\
+		    const void* strtbl, UV dataend);			\
+  static UV								\
+  ididx_lookup_##fmt(UV id, const void* kidx);				\
+  static AV*								\
+  drec_##fmt(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);	\
+  static SV*								\
+  dval_##fmt(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);	\
+  static SV*								\
+  dsort_##fmt(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
+
+DECLFN(U32,     L, identity)
+DECLFN(UV,      J, identity)
+DECLFN(U32,     N, ntohl)
+# ifdef HAS_QUAD
+DECLFN(U64TYPE, Q, identity)
+# endif
+
+typedef void* (*idx_lookup)(const char *k, int klen, int dbfmt, int kutf8,
+	      		    const void *kidx,
+			    const void *strtbl, UV dataend,
+			    /* output params */
+			    int* isidx, UV* nextpos);
+typedef UV (*idx_srchpos)(const char *k, int klen, int dbfmt, int kutf8,
+			  const void *kidx,
+			  const void *strtbl, UV dataend);
+typedef void (*pushresult)(pTHX_ const void* _descr, SV** sp);
+typedef void (*pushrecords)(pTHX_ const void* _descr, int dbfmt,
+			    const char* datap, UV dataend,
+			    const void* _strtbl, SV** sp);
+typedef void (*pushvalues)(pTHX_ const void* _descr, int dbfmt,
+			   const char* datap, UV dataend,
+			   const void* _strtbl, SV** sp);
+typedef void (*pushsorts)(pTHX_ const void* _descr, int dbfmt,
+			  const char* datap, UV dataend,
+			  const void* _strtbl, SV** sp);
+typedef AV* (*drec)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
+typedef SV* (*dval)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
+typedef SV* (*dsort)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
+typedef UV (*ididx_lookup)(UV id, const void *kidx);
+
+# define USEFN(fmt) {							\
+      idx_lookup_##fmt,							\
+      idx_srchpos_##fmt,						\
+      pushresult_##fmt,							\
+      pushrecords_##fmt,						\
+      pushvalues_##fmt,							\
+      pushsorts_##fmt,							\
+      ididx_lookup_##fmt,						\
+      drec_##fmt,							\
+      dval_##fmt,							\
+      dsort_##fmt}
+# define NULLFN {0,0,0,0}
+
+struct {
+  idx_lookup idx;
+  idx_srchpos srch;
+  pushresult pres;
+  pushrecords precords;
+  pushvalues pvalues;
+  pushsorts psorts;
+  ididx_lookup ididx;
+  drec drec;
+  dval dval;
+  dsort dsort;
+} lookup[]={
+# ifdef EBCDIC
+  USEFN(L),
+  USEFN(N),
+#   ifdef HAS_QUAD
+  USEFN(Q),
+#   else
+  NULLFN,
+#   endif
+  USEFN(J),
+# else	/* ASCII */
+#   ifdef HAS_QUAD
+  USEFN(Q),
+#   else
+  NULLFN,
+#   endif
+  USEFN(J),
+  USEFN(L),
+  USEFN(N),
+# endif
+};
+
+# ifdef EBCDIC
+/* XXX: untested due to lack of hardware */
+#   define L(c, m) (*((lookup[(((c)-3)>>1) & 3]).m))
+# else
+#   define L(c, m) (*((lookup[((c)>>1) & 3]).m))
+# endif
 
 INLINE int
 cmp(const void* p1, int p1len, const void* p2, int p2len) {
@@ -118,6 +233,66 @@ cmp1(const void* p1, int p1len, int p1utf8,
     EXTEND(SP, npos);							\
     for( i=0; i<npos; i++ ) {						\
       mPUSHu(xI(type, cnv, descr[i]));					\
+    }									\
+    PUTBACK;								\
+  }									\
+									\
+  static void								\
+  pushrecords_##fmt(pTHX_ const void* _descr, int dbfmt,		\
+		    const char* datap,					\
+		    UV dataend, const void* strtbl, SV** sp) {		\
+    const type* descr=_descr;						\
+    type npos, pos;							\
+    int i;								\
+    AV* av;								\
+    npos=xI(type, cnv, *descr++);	/* position count */		\
+    EXTEND(SP, npos);							\
+    for( i=0; i<npos; i++ ) {						\
+      pos=xI(type, cnv, descr[i]);					\
+      if( expect_true(pos<dataend) ) {					\
+        av=drec_##fmt(aTHX_ datap+pos, dbfmt, strtbl);			\
+	PUSHs(sv_2mortal(newRV_noinc((SV*)av)));			\
+      }									\
+    }									\
+    PUTBACK;								\
+  }									\
+									\
+  static void								\
+  pushvalues_##fmt(pTHX_ const void* _descr, int dbfmt,			\
+		   const char* datap,					\
+		   UV dataend, const void* strtbl, SV** sp) {		\
+    const type* descr=_descr;						\
+    type npos, pos;							\
+    int i;								\
+    SV* rsv;								\
+    npos=xI(type, cnv, *descr++);	/* position count */		\
+    EXTEND(SP, npos);							\
+    for( i=0; i<npos; i++ ) {						\
+      pos=xI(type, cnv, descr[i]);					\
+      if( expect_true(pos<dataend) ) {					\
+        rsv=dval_##fmt(aTHX_ datap+pos, dbfmt, strtbl);			\
+	PUSHs(sv_2mortal(rsv));						\
+      }									\
+    }									\
+    PUTBACK;								\
+  }									\
+									\
+  static void								\
+  pushsorts_##fmt(pTHX_ const void* _descr, int dbfmt,			\
+		   const char* datap,					\
+		   UV dataend, const void* strtbl, SV** sp) {		\
+    const type* descr=_descr;						\
+    type npos, pos;							\
+    int i;								\
+    SV* rsv;								\
+    npos=xI(type, cnv, *descr++);	/* position count */		\
+    EXTEND(SP, npos);							\
+    for( i=0; i<npos; i++ ) {						\
+      pos=xI(type, cnv, descr[i]);					\
+      if( expect_true(pos<dataend) ) {					\
+        rsv=dsort_##fmt(aTHX_ datap+pos, dbfmt, strtbl);		\
+	PUSHs(sv_2mortal(rsv));						\
+      }									\
     }									\
     PUTBACK;								\
   }									\
@@ -195,7 +370,7 @@ cmp1(const void* p1, int p1len, int p1utf8,
 	        k, klen);						\
 	if(rel<0) {							\
 	  low=cur+1;							\
-	} else {						\
+	} else {							\
 	  high=cur;							\
 	}								\
       }									\
@@ -209,7 +384,7 @@ cmp1(const void* p1, int p1len, int p1utf8,
 	         k, klen, kutf8);					\
 	if(rel<0) {							\
 	  low=cur+1;							\
-	} else {						\
+	} else {							\
 	  high=cur;							\
 	}								\
       }									\
@@ -348,67 +523,6 @@ GENFN(U32,     N, ntohl)
 GENFN(U64TYPE, Q, identity)
 # endif
 
-typedef void* (*idx_lookup)(const char *k, int klen, int dbfmt, int kutf8,
-	      		    const void *kidx,
-			    const void *strtbl, UV dataend,
-			    /* output params */
-			    int* isidx, UV* nextpos);
-typedef UV (*idx_srchpos)(const char *k, int klen, int dbfmt, int kutf8,
-			  const void *kidx,
-			  const void *strtbl, UV dataend);
-typedef void (*pushresult)(pTHX_ const void* _descr, SV** sp);
-typedef AV* (*drec)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
-typedef SV* (*dval)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
-typedef SV* (*dsort)(pTHX_ const void* _rec, int dbfmt, const void* _strtbl);
-typedef UV (*ididx_lookup)(UV id, const void *kidx);
-
-# define USEFN(fmt) {							\
-      idx_lookup_##fmt,							\
-      idx_srchpos_##fmt,						\
-      pushresult_##fmt,							\
-      ididx_lookup_##fmt,						\
-      drec_##fmt,							\
-      dval_##fmt,							\
-      dsort_##fmt}
-# define NULLFN {0,0,0,0}
-
-struct {
-  idx_lookup idx;
-  idx_srchpos srch;
-  pushresult pres;
-  ididx_lookup ididx;
-  drec drec;
-  dval dval;
-  dsort dsort;
-} lookup[]={
-# ifdef EBCDIC
-  USEFN(L),
-  USEFN(N),
-#   ifdef HAS_QUAD
-  USEFN(Q),
-#   else
-  NULLFN,
-#   endif
-  USEFN(J),
-# else	/* ASCII */
-#   ifdef HAS_QUAD
-  USEFN(Q),
-#   else
-  NULLFN,
-#   endif
-  USEFN(J),
-  USEFN(L),
-  USEFN(N),
-# endif
-};
-
-# ifdef EBCDIC
-/* XXX: untested due to lack of hardware */
-#   define L(c, m) (*((lookup[(((c)-3)>>1) & 3]).m))
-# else
-#   define L(c, m) (*((lookup[((c)>>1) & 3]).m))
-# endif
-
 
 MODULE = MMapDB		PACKAGE = MMapDB		
 
@@ -435,7 +549,8 @@ index_lookup(I, ...)
       dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
       dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
-      W("MainIdx=%d\n", (int)dataend);
+      W("MainIdx=%d, pos=%d\n", (int)dataend, (int)pos);
+      if( !pos ) pos=dataend;
 
       for(i=2; i<items && isidx; i++) {
 	keyp=SvPV(ST(i), keylen);
@@ -481,6 +596,8 @@ index_lookup_position(I, ...)
       strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
       dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
       dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+
+      if( !pos ) pos=dataend;
 
       for(i=2; i<items-1 && isidx; i++) {
 	keyp=SvPV(ST(i), keylen);
@@ -530,11 +647,13 @@ data_record(I, ...)
     MMapDB I;
   PPCODE:
     if( items>1 ) {
-      UV pos=SvUV(ST(1));
+      int i;
+      UV pos;
       char *datap, *intfmt;
-      UV dataend, stroff, dbfmt;
+      UV dataend, dbfmt;
       SV **svp=av_fetch(I, MMDB_DATA, 0);
       AV* av;
+      void* strtbl;
 
       if( expect_true((svp && SvROK(*svp))) ) {
 	datap=SvPV_nolen(SvRV(*svp));
@@ -542,26 +661,81 @@ data_record(I, ...)
 	dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
 	dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
-	if( expect_true(pos<dataend) ) {
-	  intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
-	  stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+	intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+	strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
 
-	  av=L(intfmt[0],drec)(aTHX_ datap+pos, dbfmt, datap+stroff);
-	  PUSHs(sv_2mortal(newRV_noinc((SV*)av)));
+	for( i=1; i<items; i++ ) {
+	  pos=SvUV(ST(i));
+	  if( expect_true(pos<dataend) ) {
+	    av=L(intfmt[0],drec)(aTHX_ datap+pos, dbfmt, strtbl);
+	    PUSHs(sv_2mortal(newRV_noinc((SV*)av)));
+	  } else {
+	    PUSHs(&PL_sv_undef);
+	  }
 	}
       }
     }
+
+void
+index_lookup_records(I, ...)
+    MMapDB I;
+  PPCODE:
+    if( expect_true(items>1) ) {
+      UV pos=SvUV(ST(1));
+      STRLEN keylen;
+      char *datap, *intfmt, *keyp;
+      SV **svp=av_fetch(I, MMDB_DATA, 0);
+      void *strtbl, *found=0;
+      UV dataend, dbfmt;
+      int i, isidx=1;
+
+      if( expect_false(!(svp && SvROK(*svp))) ) goto END;
+      datap=SvPV_nolen(SvRV(*svp));
+
+      intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+      strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+      dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+      dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+
+      W("MainIdx=%d, pos=%d\n", (int)dataend, (int)pos);
+      if( !pos ) pos=dataend;
+
+      for(i=2; i<items && isidx; i++) {
+	keyp=SvPV(ST(i), keylen);
+
+	W("\nlooking for %*s\n", (int)keylen, (char*)keyp);
+
+	found=L(intfmt[0],idx)(keyp, keylen, dbfmt, SvUTF8(ST(i)), datap+pos,
+			       strtbl, dataend,
+			       &isidx, &pos);
+
+	W("  --> found %lx\n", (long)found);
+
+	if(!found) goto END;
+      }
+
+      if( expect_true(found && i==items) ) {
+	L(intfmt[0],precords)(aTHX_ found, dbfmt, datap, dataend, strtbl, sp);
+	/* pres() EXTENDs the stack and hence can reallocate it.
+	 * So it calls PUTPACK afterwards and we must return here
+	 * to avoid the implicit PUTBACK that XS inserts. */
+	return;
+      }
+    }
+   END:
 
 void
 data_value(I, ...)
     MMapDB I;
   PPCODE:
     if( items>1 ) {
-      UV pos=SvUV(ST(1));
+      int i;
+      UV pos;
       char *datap, *intfmt;
-      UV dataend, stroff, dbfmt;
+      UV dataend, dbfmt;
       SV **svp=av_fetch(I, MMDB_DATA, 0);
       SV* rsv;
+      void* strtbl;
 
       if( expect_true((svp && SvROK(*svp))) ) {
 	datap=SvPV_nolen(SvRV(*svp));
@@ -569,26 +743,81 @@ data_value(I, ...)
 	dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
 	dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
-	if( expect_true(pos<dataend) ) {
-	  intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
-	  stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+	intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+	strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
 
-	  rsv=L(intfmt[0],dval)(aTHX_ datap+pos, dbfmt, datap+stroff);
-	  PUSHs(sv_2mortal(rsv));
+	for( i=1; i<items; i++ ) {
+	  pos=SvUV(ST(i));
+	  if( expect_true(pos<dataend) ) {
+	    rsv=L(intfmt[0],dval)(aTHX_ datap+pos, dbfmt, strtbl);
+	    PUSHs(sv_2mortal(rsv));
+	  } else {
+	    PUSHs(&PL_sv_undef);
+	  }
 	}
       }
     }
+
+void
+index_lookup_values(I, ...)
+    MMapDB I;
+  PPCODE:
+    if( expect_true(items>1) ) {
+      UV pos=SvUV(ST(1));
+      STRLEN keylen;
+      char *datap, *intfmt, *keyp;
+      SV **svp=av_fetch(I, MMDB_DATA, 0);
+      void *strtbl, *found=0;
+      UV dataend, dbfmt;
+      int i, isidx=1;
+
+      if( expect_false(!(svp && SvROK(*svp))) ) goto END;
+      datap=SvPV_nolen(SvRV(*svp));
+
+      intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+      strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+      dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+      dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+
+      W("MainIdx=%d, pos=%d\n", (int)dataend, (int)pos);
+      if( !pos ) pos=dataend;
+
+      for(i=2; i<items && isidx; i++) {
+	keyp=SvPV(ST(i), keylen);
+
+	W("\nlooking for %*s\n", (int)keylen, (char*)keyp);
+
+	found=L(intfmt[0],idx)(keyp, keylen, dbfmt, SvUTF8(ST(i)), datap+pos,
+			       strtbl, dataend,
+			       &isidx, &pos);
+
+	W("  --> found %lx\n", (long)found);
+
+	if(!found) goto END;
+      }
+
+      if( expect_true(found && i==items) ) {
+	L(intfmt[0],pvalues)(aTHX_ found, dbfmt, datap, dataend, strtbl, sp);
+	/* pres() EXTENDs the stack and hence can reallocate it.
+	 * So it calls PUTPACK afterwards and we must return here
+	 * to avoid the implicit PUTBACK that XS inserts. */
+	return;
+      }
+    }
+   END:
 
 void
 data_sort(I, ...)
     MMapDB I;
   PPCODE:
     if( items>1 ) {
-      UV pos=SvUV(ST(1));
+      int i;
+      UV pos;
       char *datap, *intfmt;
-      UV dataend, stroff, dbfmt;
+      UV dataend, dbfmt;
       SV **svp=av_fetch(I, MMDB_DATA, 0);
       SV* rsv;
+      void* strtbl;
 
       if( expect_true((svp && SvROK(*svp))) ) {
 	datap=SvPV_nolen(SvRV(*svp));
@@ -596,15 +825,68 @@ data_sort(I, ...)
 	dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
 	dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
 
-	if( expect_true(pos<dataend) ) {
-	  intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
-	  stroff=SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+	intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+	strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
 
-	  rsv=L(intfmt[0],dsort)(aTHX_ datap+pos, dbfmt, datap+stroff);
-	  PUSHs(sv_2mortal(rsv));
+	for( i=1; i<items; i++ ) {
+	  pos=SvUV(ST(i));
+	  if( expect_true(pos<dataend) ) {
+	    rsv=L(intfmt[0],dsort)(aTHX_ datap+pos, dbfmt, strtbl);
+	    PUSHs(sv_2mortal(rsv));
+	  } else {
+	    PUSHs(&PL_sv_undef);
+	  }
 	}
       }
     }
+
+void
+index_lookup_sorts(I, ...)
+    MMapDB I;
+  PPCODE:
+    if( expect_true(items>1) ) {
+      UV pos=SvUV(ST(1));
+      STRLEN keylen;
+      char *datap, *intfmt, *keyp;
+      SV **svp=av_fetch(I, MMDB_DATA, 0);
+      void *strtbl, *found=0;
+      UV dataend, dbfmt;
+      int i, isidx=1;
+
+      if( expect_false(!(svp && SvROK(*svp))) ) goto END;
+      datap=SvPV_nolen(SvRV(*svp));
+
+      intfmt=SvPV_nolen(*av_fetch(I, MMDB_INTFMT, 0));
+      strtbl=datap+SvUV(*av_fetch(I, MMDB_STRINGTBL, 0));
+      dataend=SvUV(*av_fetch(I, MMDB_MAINIDX, 0));
+      dbfmt=SvUV(*av_fetch(I, MMDB_DBFORMAT_IN, 0));
+
+      W("MainIdx=%d, pos=%d\n", (int)dataend, (int)pos);
+      if( !pos ) pos=dataend;
+
+      for(i=2; i<items && isidx; i++) {
+	keyp=SvPV(ST(i), keylen);
+
+	W("\nlooking for %*s\n", (int)keylen, (char*)keyp);
+
+	found=L(intfmt[0],idx)(keyp, keylen, dbfmt, SvUTF8(ST(i)), datap+pos,
+			       strtbl, dataend,
+			       &isidx, &pos);
+
+	W("  --> found %lx\n", (long)found);
+
+	if(!found) goto END;
+      }
+
+      if( expect_true(found && i==items) ) {
+	L(intfmt[0],psorts)(aTHX_ found, dbfmt, datap, dataend, strtbl, sp);
+	/* pres() EXTENDs the stack and hence can reallocate it.
+	 * So it calls PUTPACK afterwards and we must return here
+	 * to avoid the implicit PUTBACK that XS inserts. */
+	return;
+      }
+    }
+   END:
 
 ## Local Variables:
 ## mode: C
