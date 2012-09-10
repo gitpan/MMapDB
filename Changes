@@ -1,8 +1,9 @@
 Revision history for Perl extension MMapDB.
 
-TODO:
-
-- lookup operations using custom operators allowed by Perl 5.12
+0.15  Mon Sep 10 10:37:44 CEST 2012
+      - make "map {local $_} values %{$d->main_index}" work
+        map creates an alias ($_) and local tries to assign to it.
+        Prior this threw an exception.
 
 0.14  Sun Apr  3 20:57:57 CEST 2011
       - index_lookup and index_lookup_position now accept 0 or undef in

@@ -9,7 +9,7 @@ use Fcntl qw/:flock/;
 my @fmts=('', undef, qw/L N J/);
 eval {my $x=pack 'Q', 0; push @fmts, 'Q'};
 #my @fmts=('');
-plan tests=>159*@fmts;
+plan tests=>167*@fmts;
 #plan 'no_plan';
 #use Data::Dumper; $Data::Dumper::Useqq=1;
 
@@ -355,6 +355,20 @@ sub doone {
   eval {$d->main_index->{key1}->[3]=1};
   like $@, qr/Modification of a read-only value attempted at/,
     'MMapDB::Data is read-only';
+
+  {
+    $d->datamode=DATAMODE_SIMPLE;
+    map {
+      # note explain $_;
+      local $_=42;              # this is also a write access
+      # note explain $_;
+      is_deeply $_, 42, 'map {local $_} values %{$d->main_index}';
+    } (values(%{$d->main_index}),
+       @{$d->main_index->{key1}},
+       $d->main_index->{key1}->[0],
+       values(%{$d->id_index}));
+    $d->datamode=DATAMODE_NORMAL;
+  }
 
   ##########################################################################
   # test update

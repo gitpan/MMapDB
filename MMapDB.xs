@@ -888,6 +888,13 @@ index_lookup_sorts(I, ...)
     }
    END:
 
+int
+_localizing()
+  CODE:
+    RETVAL=PL_localizing;
+  OUTPUT:
+    RETVAL
+
 ## Local Variables:
 ## mode: C
 ## End:

@@ -118,9 +118,11 @@ sub doone {
     my $mi=$d->mainidx;
     my $f_mmdb=sub {scalar @{$indx->{$k1}->{$k2}}};
     my $f_idxl=sub {@el=$d->MMapDB::index_lookup($mi, $k1, $k2);scalar @el};
+    # my $f_idx2=sub {@el=MMapDB::index_lookup($d, $mi, $k1, $k2);scalar @el};
 
     is $f_mmdb->(), $checkval;
     is $f_idxl->(), $checkval;
+    # is $f_idx2->(), $checkval;
 
     open my $saveout, '>&STDOUT';
     open STDOUT, '>&STDERR';
@@ -131,6 +133,7 @@ sub doone {
       {
        'mmdb_'.$fmt=>$f_mmdb,
        'idxl_'.$fmt=>$f_idxl,
+       # 'idx2_'.$fmt=>$f_idx2,
       };
     @{$bench}{keys %{$h}}=values %{$h};
 

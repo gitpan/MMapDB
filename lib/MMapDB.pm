@@ -17,7 +17,7 @@ use Exporter qw/import/;
 use Encode ();
 
 {				# limit visibility of "our"/"my" variables
-  our $VERSION = '0.14';
+  our $VERSION = '0.15';
   our %EXPORT_TAGS=
     (
      mode =>[qw/DATAMODE_NORMAL DATAMODE_SIMPLE/],
@@ -1026,13 +1026,16 @@ sub nelem {
   use strict;
   use Carp qw/croak/;
   use Scalar::Util ();
+  use Exporter qw/import/;
 
-  use constant {
-    PARENT=>0,
-    POS=>1,
-    DATAMODE=>2,
-    ITERATOR=>3,
-  };
+  use constant ({
+                 PARENT=>0,
+                 POS=>1,
+                 DATAMODE=>2,
+                 ITERATOR=>3,
+                 SHADOW=>4,
+                });
+  BEGIN {our @EXPORT=(qw!PARENT POS DATAMODE ITERATOR SHADOW!)};
 
   sub new {
     my ($class, @param)=@_;
@@ -1046,22 +1049,60 @@ sub nelem {
 
   sub datamode : lvalue {$_[0]->[DATAMODE]}
 
-  *TIEHASH=\&new;
-  *STORE=\&readonly;
-  *DELETE=\&readonly;
-  *CLEAR=\&readonly;
+  BEGIN {
+    *TIEHASH=\&new;
+    # STORE must be allowed to support constructs like this (with aliases):
+    #   map {
+    #     local $_;
+    #   } values %{$db->main_index};
+    # or
+    #   for (values %{$db->main_index}) {
+    #     local $_;
+    #   }
+    *STORE=sub {
+      my ($I, $key, $value)=@_;
+      my $el;
+      my $ll=MMapDB::_localizing();
+      # Carp::cluck "PL_localizing=$ll";
 
-  *TIEARRAY=\&new;
-  *STORE=\&readonly;
-  *STORESIZE=\&readonly;
-  *EXTEND=\&readonly;
-  *DELETE=\&readonly;
-  *CLEAR=\&readonly;
-  *PUSH=\&readonly;
-  *UNSHIFT=\&readonly;
-  *POP=\&readonly;
-  *SHIFT=\&readonly;
-  *SPLICE=\&readonly;
+      $el=($I->[SHADOW]||={});
+      my $sh;
+      if( $ll==0 and $sh=$el->{$key} ) { # is already localized
+        # warn "  ==> already shadowed";
+        $sh->[1]=$value;
+      } elsif( $ll==1 ) {
+        # warn "  ==> shadowing";
+        $sh=($el->{$key}||=[]);
+        $sh->[0]++;
+        $sh->[1]=$value;
+      } elsif( $ll==2 ) {
+        if( --$sh->[0] ) {
+          # warn "  ==> decremented shadow counter";
+          $sh->[1]=$value;
+        } else {
+          # warn "  ==> deleting shadow";
+          delete $el->{$key};
+        }
+      } else {
+        # warn "  ==> ro";
+        goto &readonly;
+      }
+    };
+    *DELETE=\&readonly;
+    *CLEAR=\&readonly;
+
+    *TIEARRAY=\&new;
+    #*STORE=sub {};
+    *STORESIZE=\&readonly;
+    *EXTEND=\&readonly;
+    #*DELETE=\&readonly;
+    #*CLEAR=\&readonly;
+    *PUSH=\&readonly;
+    *UNSHIFT=\&readonly;
+    *POP=\&readonly;
+    *SHIFT=\&readonly;
+    *SPLICE=\&readonly;
+  }
 }
 
 #######################################################################
@@ -1072,17 +1113,20 @@ sub nelem {
   package MMapDB::Index;
 
   use strict;
-  use constant {
-    PARENT=>MMapDB::_base::PARENT,
-    POS=>MMapDB::_base::POS,
-    DATAMODE=>MMapDB::_base::DATAMODE,
-    ITERATOR=>MMapDB::_base::ITERATOR,
-  };
-
+  BEGIN {MMapDB::_base->import}
   {our @ISA=qw/MMapDB::_base/}
 
   sub FETCH {
     my ($I, $key)=@_;
+
+    {
+      my $shel;
+      $shel=$I->[SHADOW] and
+        keys %$shel and
+          $shel=$shel->{$key} and
+            return $shel->[1];
+    }
+
     my @el=$I->[PARENT]->index_lookup($I->[POS], $key);
 
     return unless @el;
@@ -1132,16 +1176,18 @@ sub nelem {
   package MMapDB::IDIndex;
 
   use strict;
-  use constant {
-    PARENT=>MMapDB::_base::PARENT,
-    POS=>MMapDB::_base::POS,
-    DATAMODE=>MMapDB::_base::DATAMODE,
-    ITERATOR=>MMapDB::_base::ITERATOR,
-  };
-
+  BEGIN {MMapDB::_base->import}
   {our @ISA=qw/MMapDB::Index/}
 
   sub FETCH {
+    {
+      my $shel;
+      $shel=$_[0]->[SHADOW] and
+        keys %$shel and
+          $shel=$shel->{$_[1]} and
+            return $shel->[1];
+    }
+
     if( $_[0]->[DATAMODE]==MMapDB::DATAMODE_SIMPLE ) {
       $_[0]->[PARENT]->data_value($_[0]->[PARENT]->id_index_lookup($_[1]));
     } else {
@@ -1169,28 +1215,31 @@ sub nelem {
   package MMapDB::Data;
 
   use strict;
-  use constant {
-    PARENT=>MMapDB::_base::PARENT,
-    POSLIST=>MMapDB::_base::POS,
-    DATAMODE=>MMapDB::_base::DATAMODE,
-    ITERATOR=>MMapDB::_base::ITERATOR,
-  };
-
+  BEGIN {MMapDB::_base->import}
   {our @ISA=qw/MMapDB::_base/}
 
   sub FETCH {
     my ($I, $idx)=@_;
-    return unless @{$I->[POSLIST]}>$idx;
+
+    {
+      my $shel;
+      $shel=$I->[SHADOW] and
+        keys %$shel and
+          $shel=$shel->{$idx} and
+            return $shel->[1];
+    }
+
+    return unless @{$I->[POS]}>$idx;
     if( $I->[DATAMODE]==MMapDB::DATAMODE_SIMPLE ) {
-      return $I->[PARENT]->data_value($I->[POSLIST]->[$idx]);
+      return $I->[PARENT]->data_value($I->[POS]->[$idx]);
     } else {
-      return $I->[PARENT]->data_record($I->[POSLIST]->[$idx]);
+      return $I->[PARENT]->data_record($I->[POS]->[$idx]);
     }
   }
 
-  sub FETCHSIZE {scalar @{$_[0]->[POSLIST]}}
+  sub FETCHSIZE {scalar @{$_[0]->[POS]}}
 
-  sub EXISTS {@{$_[0]->[POSLIST]}>$_[1]}
+  sub EXISTS {@{$_[0]->[POS]}>$_[1]}
 }
 
 1;
@@ -1538,7 +1587,7 @@ Other think it is the return value of a function or method.
 
 This modules somehow divides errors in 2 categories. A key that could not
 be found for example is a normal result not an error. However, a disk full
-condition or unsufficient permissions to create a file are errors. This
+condition or insufficient permissions to create a file are errors. This
 kind of errors are thrown as exceptions. Normal results are returned through
 the return value.
 
@@ -1799,7 +1848,7 @@ these files. The files are created as sparse files. The actual space is
 allocated on demand. By default both these values are set to C<10*1024*1024>
 which is ten megabytes.
 
-When the space in one of the areas becomes unsufficient it is extented and
+When the space in one of the areas becomes insufficient it is extented and
 remapped in chunks of C<index_prealloc> and C<stringmap_prealloc> respectively.
 
 You should change the default values only for really big databases:

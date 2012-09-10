@@ -329,7 +329,7 @@ CONCEPTS
 
     This modules somehow divides errors in 2 categories. A key that could
     not be found for example is a normal result not an error. However, a
-    disk full condition or unsufficient permissions to create a file are
+    disk full condition or insufficient permissions to create a file are
     errors. This kind of errors are thrown as exceptions. Normal results are
     returned through the return value.
 
@@ -561,7 +561,7 @@ METHODS
     allocated on demand. By default both these values are set to
     "10*1024*1024" which is ten megabytes.
 
-    When the space in one of the areas becomes unsufficient it is extented
+    When the space in one of the areas becomes insufficient it is extented
     and remapped in chunks of "index_prealloc" and "stringmap_prealloc"
     respectively.
 
